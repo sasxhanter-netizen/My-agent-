@@ -1,0 +1,220 @@
+name: Build APK
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build.yml'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Generate project
+        run: |
+          mkdir -p app/src/main/java/com/myagent/app
+          cat > settings.gradle.kts <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "MyAgent"
+          include(":app")
+          EOF
+          cat > build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=true
+          EOF
+          cat > app/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.myagent.app"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.myagent.app"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          EOF
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET"/>
+              <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+              <queries>
+                  <intent><action android:name="android.speech.RecognitionService"/></intent>
+                  <intent><action android:name="android.intent.action.TTS_SERVICE"/></intent>
+              </queries>
+              <application android:label="MyAgent" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+          cat > app/src/main/java/com/myagent/app/MainActivity.kt <<'EOF'
+          package com.myagent.app
+
+          import android.Manifest
+          import android.app.Activity
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.os.Bundle
+          import android.speech.RecognitionListener
+          import android.speech.RecognizerIntent
+          import android.speech.SpeechRecognizer
+          import android.speech.tts.TextToSpeech
+          import android.text.InputType
+          import android.widget.*
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.net.HttpURLConnection
+          import java.net.URL
+          import java.util.Locale
+          import kotlin.concurrent.thread
+
+          class MainActivity : Activity(), TextToSpeech.OnInitListener {
+              private lateinit var keyBox: EditText
+              private lateinit var modelBox: EditText
+              private lateinit var status: TextView
+              private var recognizer: SpeechRecognizer? = null
+              private var tts: TextToSpeech? = null
+              private val prefs by lazy { getSharedPreferences("agent", Context.MODE_PRIVATE) }
+
+              override fun onCreate(b: Bundle?) {
+                  super.onCreate(b)
+                  tts = TextToSpeech(this, this)
+                  val root = LinearLayout(this)
+                  root.orientation = LinearLayout.VERTICAL
+                  root.setPadding(40, 80, 40, 40)
+                  keyBox = EditText(this)
+                  keyBox.hint = "Gemini API key"
+                  keyBox.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                  keyBox.setText(prefs.getString("key", ""))
+                  modelBox = EditText(this)
+                  modelBox.hint = "Model"
+                  modelBox.setText(prefs.getString("model", "gemini-flash-latest"))
+                  val mic = Button(this)
+                  mic.text = "🎤 اضغط وتكلم"
+                  mic.textSize = 20f
+                  mic.setOnClickListener { startListening() }
+                  status = TextView(this)
+                  status.textSize = 16f
+                  val scroll = ScrollView(this)
+                  scroll.addView(status)
+                  root.addView(keyBox)
+                  root.addView(modelBox)
+                  root.addView(mic)
+                  root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+                  setContentView(root)
+              }
+
+              override fun onInit(s: Int) {
+                  tts?.language = Locale("ar")
+              }
+
+              private fun log(s: String) = runOnUiThread { status.append(s + "\n\n") }
+
+              override fun onRequestPermissionsResult(c: Int, p: Array<out String>, r: IntArray) {
+                  if (r.isNotEmpty() && r[0] == PackageManager.PERMISSION_GRANTED) startListening()
+              }
+
+              private fun startListening() {
+                  if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                      requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 1)
+                      return
+                  }
+                  if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+                      log("خدمة التعرف على الصوت غير متوفرة")
+                      return
+                  }
+                  prefs.edit()
+                      .putString("key", keyBox.text.toString().trim())
+                      .putString("model", modelBox.text.toString().trim())
+                      .apply()
+                  recognizer?.destroy()
+                  recognizer = SpeechRecognizer.createSpeechRecognizer(this)
+                  recognizer?.setRecognitionListener(object : RecognitionListener {
+                      override fun onReadyForSpeech(p: Bundle?) { log("🎧 أسمعك...") }
+                      override fun onBeginningOfSpeech() {}
+                      override fun onRmsChanged(v: Float) {}
+                      override fun onBufferReceived(b: ByteArray?) {}
+                      override fun onEndOfSpeech() {}
+                      override fun onError(e: Int) { log("خطأ في التعرف على الصوت: " + e) }
+                      override fun onResults(r: Bundle?) {
+                          val t = r?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+                          if (t.isNullOrBlank()) { log("ما سمعت شي"); return }
+                          log("أنت: " + t)
+                          askGemini(t)
+                      }
+                      override fun onPartialResults(p: Bundle?) {}
+                      override fun onEvent(t: Int, p: Bundle?) {}
+                  })
+                  val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                  i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                  i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ar-SA")
+                  recognizer?.startListening(i)
+              }
+
+              private fun askGemini(q: String) {
+                  val key = prefs.getString("key", "") ?: ""
+                  val model = (prefs.getString("model", "") ?: "").ifBlank { "gemini-flash-latest" }
+                  if (key.isBlank()) { log("اكتب مفتاح Gemini أولاً"); return }
+                  thread {
+                      try {
+                          val sys = JSONObject().put("parts", JSONArray().put(JSONObject().put("text", "أنت مساعد صوتي ذكي. رد باختصار وبالعربية البسيطة.")))
+                          val user = JSONObject().put("role", "user").put("parts", JSONArray().put(JSONObject().put("text", q)))
+                          val body = JSONObject().put("system_instruction", sys).put("contents", JSONArray().put(user))
+                          val c = URL("https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent").openConnection() as HttpURLConnection
+                          c.requestMethod = "POST"
+                          c.setRequestProperty("Content-Type", "application/json")
+                          c.setRequestProperty("x-goog-api-key", key)
+                          c.doOutput = true
+                          c.connectTimeout = 20000
+                          c.readTimeout = 60000
+                          c.outputStream.use { it.write(body.toString().toByteArray()) }
+                          val code = c.responseCode
+                          val txt = (if (code in 200..299) c.inputStream else c.errorStream).bufferedReader().use { it.readText() }
+                          if (code !in 200..299) { log("خطأ " + code + ": " + txt.take(300)); return@thread }
+                          val ans = JSONObject(txt).getJSONArray("candidates").getJSONObject(0)
+                              .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
+                          log("المساعد: " + ans)
+                          runOnUiThread { tts?.speak(ans, TextToSpeech.QUEUE_FLUSH, null, "a") }
+                      } catch (e: Exception) {
+                          log("خطأ: " + e.message)
+                      }
+                  }
+              }
+          }
+          EOF
+      - name: Build
+        run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MyAgent-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
