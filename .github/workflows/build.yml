@@ -48,7 +48,7 @@ jobs:
                   minSdk = 26
                   targetSdk = 34
                   versionCode = 1
-                  versionName = "1.0"
+                  versionName = "1.1"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -118,7 +118,7 @@ jobs:
                   keyBox.setText(prefs.getString("key", ""))
                   modelBox = EditText(this)
                   modelBox.hint = "Model"
-                  modelBox.setText(prefs.getString("model", "gemini-flash-latest"))
+                  modelBox.setText(prefs.getString("model", "gemini-2.5-flash"))
                   val mic = Button(this)
                   mic.text = "🎤 اضغط وتكلم"
                   mic.textSize = 20f
@@ -181,30 +181,58 @@ jobs:
                   recognizer?.startListening(i)
               }
 
+              private fun callModel(model: String, key: String, body: String): Pair<Int, String> {
+                  val c = URL("https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent").openConnection() as HttpURLConnection
+                  c.requestMethod = "POST"
+                  c.setRequestProperty("Content-Type", "application/json")
+                  c.setRequestProperty("x-goog-api-key", key)
+                  c.doOutput = true
+                  c.connectTimeout = 20000
+                  c.readTimeout = 60000
+                  c.outputStream.use { it.write(body.toByteArray()) }
+                  val code = c.responseCode
+                  val txt = (if (code in 200..299) c.inputStream else c.errorStream).bufferedReader().use { it.readText() }
+                  return Pair(code, txt)
+              }
+
               private fun askGemini(q: String) {
                   val key = prefs.getString("key", "") ?: ""
-                  val model = (prefs.getString("model", "") ?: "").ifBlank { "gemini-flash-latest" }
+                  val chosen = (prefs.getString("model", "") ?: "").trim()
                   if (key.isBlank()) { log("اكتب مفتاح Gemini أولاً"); return }
                   thread {
                       try {
                           val sys = JSONObject().put("parts", JSONArray().put(JSONObject().put("text", "أنت مساعد صوتي ذكي. رد باختصار وبالعربية البسيطة.")))
                           val user = JSONObject().put("role", "user").put("parts", JSONArray().put(JSONObject().put("text", q)))
-                          val body = JSONObject().put("system_instruction", sys).put("contents", JSONArray().put(user))
-                          val c = URL("https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent").openConnection() as HttpURLConnection
-                          c.requestMethod = "POST"
-                          c.setRequestProperty("Content-Type", "application/json")
-                          c.setRequestProperty("x-goog-api-key", key)
-                          c.doOutput = true
-                          c.connectTimeout = 20000
-                          c.readTimeout = 60000
-                          c.outputStream.use { it.write(body.toString().toByteArray()) }
-                          val code = c.responseCode
-                          val txt = (if (code in 200..299) c.inputStream else c.errorStream).bufferedReader().use { it.readText() }
-                          if (code !in 200..299) { log("خطأ " + code + ": " + txt.take(300)); return@thread }
-                          val ans = JSONObject(txt).getJSONArray("candidates").getJSONObject(0)
-                              .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
-                          log("المساعد: " + ans)
-                          runOnUiThread { tts?.speak(ans, TextToSpeech.QUEUE_FLUSH, null, "a") }
+                          val body = JSONObject().put("system_instruction", sys).put("contents", JSONArray().put(user)).toString()
+                          val models = listOf(chosen, "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest")
+                              .filter { it.isNotBlank() }.distinct()
+                          var lastErr = ""
+                          for (m in models) {
+                              for (attempt in 1..2) {
+                                  val res = callModel(m, key, body)
+                                  val code = res.first
+                                  val txt = res.second
+                                  if (code in 200..299) {
+                                      val ans = JSONObject(txt).getJSONArray("candidates").getJSONObject(0)
+                                          .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
+                                      log("المساعد (" + m + "): " + ans)
+                                      runOnUiThread { tts?.speak(ans, TextToSpeech.QUEUE_FLUSH, null, "a") }
+                                      return@thread
+                                  }
+                                  lastErr = "خطأ " + code + " (" + m + "): " + txt.take(150)
+                                  if (code == 400 || code == 401 || code == 403) {
+                                      log(lastErr + "\nتأكد من المفتاح")
+                                      return@thread
+                                  }
+                                  if (code == 503 || code == 429 || code == 500) {
+                                      log("⏳ " + m + " مشغول، أعيد المحاولة...")
+                                      Thread.sleep(1500)
+                                      continue
+                                  }
+                                  break
+                              }
+                          }
+                          log("فشلت كل المحاولات.\n" + lastErr)
                       } catch (e: Exception) {
                           log("خطأ: " + e.message)
                       }
