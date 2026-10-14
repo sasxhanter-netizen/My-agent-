@@ -48,7 +48,7 @@ jobs:
                   minSdk = 26
                   targetSdk = 34
                   versionCode = 1
-                  versionName = "1.1"
+                  versionName = "1.2"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -62,9 +62,16 @@ jobs:
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET"/>
               <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+              <uses-permission android:name="android.permission.READ_CONTACTS"/>
+              <uses-permission android:name="android.permission.CALL_PHONE"/>
+              <uses-permission android:name="android.permission.SEND_SMS"/>
               <queries>
                   <intent><action android:name="android.speech.RecognitionService"/></intent>
                   <intent><action android:name="android.intent.action.TTS_SERVICE"/></intent>
+                  <intent>
+                      <action android:name="android.intent.action.MAIN"/>
+                      <category android:name="android.intent.category.LAUNCHER"/>
+                  </intent>
               </queries>
               <application android:label="MyAgent" android:theme="@android:style/Theme.Material.Light.NoActionBar">
                   <activity android:name=".MainActivity" android:exported="true">
@@ -81,14 +88,19 @@ jobs:
 
           import android.Manifest
           import android.app.Activity
+          import android.app.AlertDialog
           import android.content.Context
           import android.content.Intent
           import android.content.pm.PackageManager
+          import android.net.Uri
+          import android.os.Build
           import android.os.Bundle
+          import android.provider.ContactsContract
           import android.speech.RecognitionListener
           import android.speech.RecognizerIntent
           import android.speech.SpeechRecognizer
           import android.speech.tts.TextToSpeech
+          import android.telephony.SmsManager
           import android.text.InputType
           import android.widget.*
           import org.json.JSONArray
@@ -105,6 +117,14 @@ jobs:
               private var recognizer: SpeechRecognizer? = null
               private var tts: TextToSpeech? = null
               private val prefs by lazy { getSharedPreferences("agent", Context.MODE_PRIVATE) }
+
+              private val SYS = """أنت مساعد صوتي على تلفون أندرويد. رد دائماً بـ JSON فقط بهذا الشكل: {"action":"chat","target":"","message":"","reply":""}
+          القيم الممكنة لـ action:
+          chat: محادثة أو سؤال عادي. ضع الجواب في reply بالعربية البسيطة وباختصار.
+          open_app: فتح تطبيق. target اسم التطبيق بالإنجليزية كما يظهر على التلفون مثل WhatsApp أو YouTube أو Chrome.
+          call: اتصال. target اسم الشخص كما قاله المستخدم أو الرقم.
+          send_sms: رسالة نصية. target اسم الشخص أو الرقم، و message نص الرسالة فقط.
+          في reply ضع جملة قصيرة تؤكد ما ستفعله."""
 
               override fun onCreate(b: Bundle?) {
                   super.onCreate(b)
@@ -132,6 +152,13 @@ jobs:
                   root.addView(mic)
                   root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
                   setContentView(root)
+                  val need = listOf(
+                      Manifest.permission.RECORD_AUDIO,
+                      Manifest.permission.READ_CONTACTS,
+                      Manifest.permission.CALL_PHONE,
+                      Manifest.permission.SEND_SMS
+                  ).filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+                  if (need.isNotEmpty()) requestPermissions(need.toTypedArray(), 1)
               }
 
               override fun onInit(s: Int) {
@@ -140,13 +167,15 @@ jobs:
 
               private fun log(s: String) = runOnUiThread { status.append(s + "\n\n") }
 
-              override fun onRequestPermissionsResult(c: Int, p: Array<out String>, r: IntArray) {
-                  if (r.isNotEmpty() && r[0] == PackageManager.PERMISSION_GRANTED) startListening()
+              private fun say(s: String) {
+                  log("المساعد: " + s)
+                  runOnUiThread { tts?.speak(s, TextToSpeech.QUEUE_FLUSH, null, "a") }
               }
 
               private fun startListening() {
                   if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                      requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 1)
+                      log("اسمح بصلاحية الميكروفون ثم اضغط مرة أخرى")
+                      requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 2)
                       return
                   }
                   if (!SpeechRecognizer.isRecognitionAvailable(this)) {
@@ -201,9 +230,10 @@ jobs:
                   if (key.isBlank()) { log("اكتب مفتاح Gemini أولاً"); return }
                   thread {
                       try {
-                          val sys = JSONObject().put("parts", JSONArray().put(JSONObject().put("text", "أنت مساعد صوتي ذكي. رد باختصار وبالعربية البسيطة.")))
+                          val sys = JSONObject().put("parts", JSONArray().put(JSONObject().put("text", SYS)))
                           val user = JSONObject().put("role", "user").put("parts", JSONArray().put(JSONObject().put("text", q)))
-                          val body = JSONObject().put("system_instruction", sys).put("contents", JSONArray().put(user)).toString()
+                          val gen = JSONObject().put("responseMimeType", "application/json")
+                          val body = JSONObject().put("system_instruction", sys).put("contents", JSONArray().put(user)).put("generationConfig", gen).toString()
                           val models = listOf(chosen, "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest")
                               .filter { it.isNotBlank() }.distinct()
                           var lastErr = ""
@@ -215,8 +245,7 @@ jobs:
                                   if (code in 200..299) {
                                       val ans = JSONObject(txt).getJSONArray("candidates").getJSONObject(0)
                                           .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
-                                      log("المساعد (" + m + "): " + ans)
-                                      runOnUiThread { tts?.speak(ans, TextToSpeech.QUEUE_FLUSH, null, "a") }
+                                      runOnUiThread { handle(ans) }
                                       return@thread
                                   }
                                   lastErr = "خطأ " + code + " (" + m + "): " + txt.take(150)
@@ -236,6 +265,115 @@ jobs:
                       } catch (e: Exception) {
                           log("خطأ: " + e.message)
                       }
+                  }
+              }
+
+              private fun handle(raw: String) {
+                  val clean = raw.replace("```json", "").replace("```", "").trim()
+                  val j = try { JSONObject(clean) } catch (e: Exception) { null }
+                  if (j == null) { say(raw); return }
+                  val action = j.optString("action", "chat")
+                  val target = j.optString("target", "")
+                  val msg = j.optString("message", "")
+                  val reply = j.optString("reply", "")
+                  when (action) {
+                      "open_app" -> openApp(target)
+                      "call" -> confirmCall(target)
+                      "send_sms" -> confirmSms(target, msg)
+                      else -> say(if (reply.isBlank()) raw else reply)
+                  }
+              }
+
+              private fun openApp(name: String) {
+                  val pm = packageManager
+                  val i = Intent(Intent.ACTION_MAIN)
+                  i.addCategory(Intent.CATEGORY_LAUNCHER)
+                  val apps = pm.queryIntentActivities(i, 0)
+                  val q = name.trim().lowercase()
+                  val hit = apps.firstOrNull { it.loadLabel(pm).toString().lowercase() == q }
+                      ?: apps.firstOrNull { it.loadLabel(pm).toString().lowercase().contains(q) }
+                  val launch = if (hit != null) pm.getLaunchIntentForPackage(hit.activityInfo.packageName) else null
+                  if (launch == null || q.isBlank()) {
+                      say("ما لقيت تطبيق باسم " + name)
+                      return
+                  }
+                  say("أفتح " + hit!!.loadLabel(pm))
+                  startActivity(launch)
+              }
+
+              private fun normalizeDigits(s: String): String {
+                  val sb = StringBuilder()
+                  for (c in s) {
+                      if (c in '٠'..'٩') sb.append(c - '٠') else sb.append(c)
+                  }
+                  return sb.toString()
+              }
+
+              private fun findContact(name: String): Pair<String, String>? {
+                  val digits = normalizeDigits(name).replace(" ", "").replace("-", "")
+                  if (digits.length >= 5 && digits.all { it.isDigit() || it == '+' }) return Pair(digits, digits)
+                  if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+                      log("صلاحية جهات الاتصال غير مفعّلة")
+                      return null
+                  }
+                  val c = contentResolver.query(
+                      ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                      arrayOf(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME, ContactsContract.CommonDataKinds.Phone.NUMBER),
+                      ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " LIKE ?",
+                      arrayOf("%" + name.trim() + "%"),
+                      null
+                  )
+                  c?.use {
+                      if (it.moveToFirst()) return Pair(it.getString(0), it.getString(1))
+                  }
+                  return null
+              }
+
+              private fun confirmCall(target: String) {
+                  val c = findContact(target)
+                  if (c == null) { say("ما لقيت جهة اتصال باسم " + target); return }
+                  say("هل أتصل بـ " + c.first + "؟")
+                  AlertDialog.Builder(this)
+                      .setTitle("اتصال")
+                      .setMessage("أتصل بـ " + c.first + "؟\n" + c.second)
+                      .setPositiveButton("اتصل") { _, _ -> doCall(c.second) }
+                      .setNegativeButton("إلغاء", null)
+                      .show()
+              }
+
+              private fun doCall(number: String) {
+                  if (checkSelfPermission(Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
+                      log("صلاحية الاتصال غير مفعّلة")
+                      return
+                  }
+                  startActivity(Intent(Intent.ACTION_CALL, Uri.parse("tel:" + Uri.encode(number))))
+              }
+
+              private fun confirmSms(target: String, text: String) {
+                  if (text.isBlank()) { say("ما فهمت نص الرسالة"); return }
+                  val c = findContact(target)
+                  if (c == null) { say("ما لقيت جهة اتصال باسم " + target); return }
+                  say("هل أرسل لـ " + c.first + " رسالة تقول: " + text + "؟")
+                  AlertDialog.Builder(this)
+                      .setTitle("إرسال رسالة")
+                      .setMessage("إلى: " + c.first + "\n" + c.second + "\n\n" + text)
+                      .setPositiveButton("إرسال") { _, _ -> doSms(c.second, text) }
+                      .setNegativeButton("إلغاء", null)
+                      .show()
+              }
+
+              @Suppress("DEPRECATION")
+              private fun doSms(number: String, text: String) {
+                  if (checkSelfPermission(Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
+                      log("صلاحية الرسائل غير مفعّلة")
+                      return
+                  }
+                  try {
+                      val sm = if (Build.VERSION.SDK_INT >= 31) getSystemService(SmsManager::class.java) else SmsManager.getDefault()
+                      sm.sendMultipartTextMessage(number, null, sm.divideMessage(text), null, null)
+                      say("تم إرسال الرسالة")
+                  } catch (e: Exception) {
+                      log("فشل الإرسال: " + e.message)
                   }
               }
           }
