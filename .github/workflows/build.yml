@@ -48,7 +48,7 @@ jobs:
                   minSdk = 26
                   targetSdk = 34
                   versionCode = 1
-                  versionName = "1.3"
+                  versionName = "1.4"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -61,10 +61,12 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET"/>
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
               <uses-permission android:name="android.permission.RECORD_AUDIO"/>
               <uses-permission android:name="android.permission.READ_CONTACTS"/>
               <uses-permission android:name="android.permission.CALL_PHONE"/>
               <uses-permission android:name="android.permission.SEND_SMS"/>
+              <uses-permission android:name="android.permission.READ_SMS"/>
               <queries>
                   <intent><action android:name="android.speech.RecognitionService"/></intent>
                   <intent><action android:name="android.intent.action.TTS_SERVICE"/></intent>
@@ -89,12 +91,16 @@ jobs:
           import android.Manifest
           import android.app.Activity
           import android.app.AlertDialog
+          import android.app.DownloadManager
           import android.content.Context
           import android.content.Intent
           import android.content.pm.PackageManager
+          import android.net.ConnectivityManager
+          import android.net.NetworkCapabilities
           import android.net.Uri
           import android.os.Build
           import android.os.Bundle
+          import android.os.Environment
           import android.provider.ContactsContract
           import android.speech.RecognitionListener
           import android.speech.RecognizerIntent
@@ -119,12 +125,19 @@ jobs:
               private val prefs by lazy { getSharedPreferences("agent", Context.MODE_PRIVATE) }
               private val history = ArrayList<Pair<String, String>>()
 
+              private val SYS_PLAIN = "أنت مساعد صوتي على تلفون أندرويد. أجب بالعربية البسيطة وباختصار (ثلاث جمل كحد أقصى) من غير تنسيق أو رموز أو روابط."
+
               private val SYS = """أنت مساعد صوتي على تلفون أندرويد. رد دائماً بـ JSON فقط بهذا الشكل: {"action":"chat","target":"","message":"","reply":""}
           القيم الممكنة لـ action:
           chat: محادثة أو سؤال عادي أو سؤال عن شيء ناقص. ضع الجواب في reply بالعربية البسيطة وباختصار.
           open_app: فتح تطبيق. target اسم التطبيق بالإنجليزية كما يظهر على التلفون مثل WhatsApp أو YouTube أو Chrome.
           call: اتصال. target اسم الشخص كما قاله المستخدم أو الرقم.
           send_sms: رسالة نصية. target اسم الشخص أو الرقم، و message نص الرسالة فقط.
+          read_sms: قراءة الرسائل الواردة وتلخيصها. target اسم الشخص أو الرقم إن طلب رسائل شخص محدد وإلا اتركه فارغاً. message عدد الرسائل كرقم إن ذكره.
+          open_url: فتح موقع أو البحث في جوجل. target الرابط الكامل أو كلمات البحث.
+          download: تحميل ملف. target رابط الملف المباشر.
+          summarize_url: تلخيص صفحة ويب. target الرابط. message ما يطلبه المستخدم بالتحديد إن وجد.
+          research: سؤال يحتاج بحثاً في الإنترنت أو معلومات حديثة أو شرح موضوع. target نص السؤال كاملاً.
           remember: حفظ معلومة طلب المستخدم أن تتذكرها. message نص المعلومة بصيغة واضحة مثل: رقم أنس الملك 0912345678.
           forget: نسيان معلومة محفوظة. target كلمة مفتاحية موجودة في المعلومة.
           قواعد:
@@ -156,10 +169,22 @@ jobs:
                   memBtn.text = "🧠 الذاكرة"
                   memBtn.setOnClickListener { showMem() }
                   val newBtn = Button(this)
-                  newBtn.text = "🔄 محادثة جديدة"
+                  newBtn.text = "🔄 جديدة"
                   newBtn.setOnClickListener { history.clear(); log("بدأنا محادثة جديدة") }
+                  val modelsBtn = Button(this)
+                  modelsBtn.text = "🔃 موديلات"
+                  modelsBtn.setOnClickListener {
+                      prefs.edit().putString("key", keyBox.text.toString().trim()).putLong("mts", 0L).apply()
+                      thread {
+                          val k = prefs.getString("key", "") ?: ""
+                          if (k.isBlank()) { log("اكتب المفتاح أولاً"); return@thread }
+                          val l = discoverModels(k)
+                          log("الموديلات المتاحة لمفتاحك:\n" + (if (l.isEmpty()) "ما قدرت أجيبها" else l.joinToString("\n")))
+                      }
+                  }
                   row.addView(memBtn, LinearLayout.LayoutParams(0, -2, 1f))
                   row.addView(newBtn, LinearLayout.LayoutParams(0, -2, 1f))
+                  row.addView(modelsBtn, LinearLayout.LayoutParams(0, -2, 1f))
                   status = TextView(this)
                   status.textSize = 16f
                   val scroll = ScrollView(this)
@@ -174,7 +199,8 @@ jobs:
                       Manifest.permission.RECORD_AUDIO,
                       Manifest.permission.READ_CONTACTS,
                       Manifest.permission.CALL_PHONE,
-                      Manifest.permission.SEND_SMS
+                      Manifest.permission.SEND_SMS,
+                      Manifest.permission.READ_SMS
                   ).filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
                   if (need.isNotEmpty()) requestPermissions(need.toTypedArray(), 1)
               }
@@ -187,7 +213,8 @@ jobs:
 
               private fun say(s: String) {
                   log("المساعد: " + s)
-                  runOnUiThread { tts?.speak(s, TextToSpeech.QUEUE_FLUSH, null, "a") }
+                  val spoken = s.replace(Regex("[*#_`]"), "").take(3500)
+                  runOnUiThread { tts?.speak(spoken, TextToSpeech.QUEUE_FLUSH, null, "a") }
               }
 
               private fun getMem(): List<String> =
@@ -232,6 +259,13 @@ jobs:
                       .show()
               }
 
+              private fun appendResult(s: String) {
+                  if (history.isNotEmpty() && history[history.size - 1].first == "model") {
+                      val last = history.removeAt(history.size - 1)
+                      history.add(Pair("model", last.second + "\nنتيجة التنفيذ: " + s.take(1500)))
+                  }
+              }
+
               private fun startListening() {
                   if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                       log("اسمح بصلاحية الميكروفون ثم اضغط مرة أخرى")
@@ -270,6 +304,48 @@ jobs:
                   recognizer?.startListening(i)
               }
 
+              private fun online(): Boolean {
+                  val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                  val n = cm.activeNetwork ?: return false
+                  val caps = cm.getNetworkCapabilities(n) ?: return false
+                  return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+              }
+
+              private fun discoverModels(key: String): List<String> {
+                  val cached = prefs.getString("mcache", "") ?: ""
+                  val ts = prefs.getLong("mts", 0L)
+                  if (cached.isNotBlank() && System.currentTimeMillis() - ts < 12 * 3600 * 1000L) {
+                      return cached.split(",").filter { it.isNotBlank() }
+                  }
+                  try {
+                      val c = URL("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200").openConnection() as HttpURLConnection
+                      c.setRequestProperty("x-goog-api-key", key)
+                      c.connectTimeout = 15000
+                      c.readTimeout = 20000
+                      if (c.responseCode !in 200..299) return emptyList()
+                      val arr = JSONObject(c.inputStream.bufferedReader().use { it.readText() }).getJSONArray("models")
+                      val bad = listOf("image", "tts", "live", "audio", "embed", "robotics", "computer", "vision", "learnlm", "gemma")
+                      val out = ArrayList<String>()
+                      for (i in 0 until arr.length()) {
+                          val m = arr.getJSONObject(i)
+                          val name = m.getString("name").removePrefix("models/")
+                          val methods = m.optJSONArray("supportedGenerationMethods")
+                          var ok = false
+                          if (methods != null) {
+                              for (k in 0 until methods.length()) {
+                                  if (methods.getString(k) == "generateContent") ok = true
+                              }
+                          }
+                          if (ok && name.contains("flash") && bad.none { name.contains(it) }) out.add(name)
+                      }
+                      val sorted = out.sortedWith(compareBy<String>({ it.contains("preview") || it.contains("exp") }, { it.contains("lite") }, { it }))
+                      prefs.edit().putString("mcache", sorted.joinToString(",")).putLong("mts", System.currentTimeMillis()).apply()
+                      return sorted
+                  } catch (e: Exception) {
+                      return emptyList()
+                  }
+              }
+
               private fun callModel(model: String, key: String, body: String): Pair<Int, String> {
                   val c = URL("https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent").openConnection() as HttpURLConnection
                   c.requestMethod = "POST"
@@ -284,59 +360,100 @@ jobs:
                   return Pair(code, txt)
               }
 
+              private fun extractText(txt: String): String? {
+                  try {
+                      val parts = JSONObject(txt).getJSONArray("candidates").getJSONObject(0)
+                          .getJSONObject("content").getJSONArray("parts")
+                      val sb = StringBuilder()
+                      for (i in 0 until parts.length()) sb.append(parts.getJSONObject(i).optString("text", ""))
+                      val s = sb.toString().trim()
+                      return if (s.isBlank()) null else s
+                  } catch (e: Exception) {
+                      return null
+                  }
+              }
+
+              private fun reason(txt: String): String {
+                  return try {
+                      JSONObject(txt).getJSONObject("error").getString("message").take(90)
+                  } catch (e: Exception) {
+                      txt.take(90)
+                  }
+              }
+
+              private fun gen(sysText: String, contents: JSONArray, json: Boolean, search: Boolean): String? {
+                  val key = prefs.getString("key", "") ?: ""
+                  if (key.isBlank()) { log("اكتب مفتاح Gemini أولاً"); return null }
+                  if (!online()) { log("لا يوجد اتصال بالنت"); return null }
+                  val chosen = (prefs.getString("model", "") ?: "").trim()
+                  val models = (listOf(chosen) + discoverModels(key).take(5) + listOf("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest"))
+                      .filter { it.isNotBlank() }.distinct().take(6)
+                  val sys = JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sysText)))
+                  val b = JSONObject().put("system_instruction", sys).put("contents", contents)
+                  if (json) b.put("generationConfig", JSONObject().put("responseMimeType", "application/json"))
+                  if (search) b.put("tools", JSONArray().put(JSONObject().put("google_search", JSONObject())))
+                  val body = b.toString()
+                  var lastErr = ""
+                  for (m in models) {
+                      for (attempt in 1..2) {
+                          val res = try {
+                              callModel(m, key, body)
+                          } catch (e: Exception) {
+                              log("خطأ شبكة: " + e.message)
+                              return null
+                          }
+                          if (res.first in 200..299) {
+                              val ans = extractText(res.second)
+                              if (ans != null) return ans
+                              lastErr = "رد فارغ من " + m
+                              log(lastErr)
+                              break
+                          }
+                          lastErr = "خطأ " + res.first + " (" + m + ")"
+                          if (res.first == 401 || res.first == 403 || res.second.contains("API_KEY_INVALID")) {
+                              log(lastErr + " - تأكد من المفتاح")
+                              return null
+                          }
+                          if (res.first == 503 || res.first == 429 || res.first == 500) {
+                              log("⏳ " + m + " مشغول (" + res.first + ")")
+                              Thread.sleep(1500)
+                              continue
+                          }
+                          log(lastErr + ": " + reason(res.second))
+                          break
+                      }
+                  }
+                  log("فشلت كل المحاولات. " + lastErr)
+                  return null
+              }
+
               private fun textPart(role: String, text: String): JSONObject =
                   JSONObject().put("role", role).put("parts", JSONArray().put(JSONObject().put("text", text)))
 
               private fun askGemini(q: String) {
-                  val key = prefs.getString("key", "") ?: ""
-                  val chosen = (prefs.getString("model", "") ?: "").trim()
-                  if (key.isBlank()) { log("اكتب مفتاح Gemini أولاً"); return }
                   val mem = getMem()
                   val sysText = if (mem.isEmpty()) SYS else SYS + "\n\nمعلومات محفوظة عن المستخدم:\n" + mem.joinToString("\n")
                   val contents = JSONArray()
                   for (h in history) contents.put(textPart(h.first, h.second))
                   contents.put(textPart("user", q))
-                  val sys = JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sysText)))
-                  val gen = JSONObject().put("responseMimeType", "application/json")
-                  val body = JSONObject().put("system_instruction", sys).put("contents", contents).put("generationConfig", gen).toString()
                   thread {
-                      try {
-                          val models = listOf(chosen, "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest")
-                              .filter { it.isNotBlank() }.distinct()
-                          var lastErr = ""
-                          for (m in models) {
-                              for (attempt in 1..2) {
-                                  val res = callModel(m, key, body)
-                                  val code = res.first
-                                  val txt = res.second
-                                  if (code in 200..299) {
-                                      val ans = JSONObject(txt).getJSONArray("candidates").getJSONObject(0)
-                                          .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
-                                      runOnUiThread {
-                                          history.add(Pair("user", q))
-                                          history.add(Pair("model", ans))
-                                          while (history.size > 10) history.removeAt(0)
-                                          handle(ans)
-                                      }
-                                      return@thread
-                                  }
-                                  lastErr = "خطأ " + code + " (" + m + "): " + txt.take(150)
-                                  if (code == 400 || code == 401 || code == 403) {
-                                      log(lastErr + "\nتأكد من المفتاح")
-                                      return@thread
-                                  }
-                                  if (code == 503 || code == 429 || code == 500) {
-                                      log("⏳ " + m + " مشغول، أعيد المحاولة...")
-                                      Thread.sleep(1500)
-                                      continue
-                                  }
-                                  break
-                              }
+                      val ans = gen(sysText, contents, true, false)
+                      if (ans != null) {
+                          runOnUiThread {
+                              history.add(Pair("user", q))
+                              history.add(Pair("model", ans))
+                              while (history.size > 10) history.removeAt(0)
+                              handle(ans)
                           }
-                          log("فشلت كل المحاولات.\n" + lastErr)
-                      } catch (e: Exception) {
-                          log("خطأ: " + e.message)
                       }
+                  }
+              }
+
+              private fun askPlain(prompt: String, search: Boolean, done: (String) -> Unit) {
+                  val contents = JSONArray().put(textPart("user", prompt))
+                  thread {
+                      val ans = gen(SYS_PLAIN, contents, false, search)
+                      if (ans != null) runOnUiThread { done(ans) }
                   }
               }
 
@@ -352,6 +469,11 @@ jobs:
                       "open_app" -> openApp(target)
                       "call" -> confirmCall(target)
                       "send_sms" -> confirmSms(target, msg)
+                      "read_sms" -> readSms(target, msg)
+                      "open_url" -> openUrl(target)
+                      "download" -> confirmDownload(target)
+                      "summarize_url" -> summarizeUrl(target, msg)
+                      "research" -> research(if (target.isBlank()) msg else target)
                       "remember" -> remember(if (msg.isBlank()) target else msg, reply)
                       "forget" -> forget(target)
                       else -> say(if (reply.isBlank()) raw else reply)
@@ -403,6 +525,19 @@ jobs:
                   return null
               }
 
+              private fun senderName(addr: String): String {
+                  if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) return addr
+                  try {
+                      val u = Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(addr))
+                      val c = contentResolver.query(u, arrayOf(ContactsContract.PhoneLookup.DISPLAY_NAME), null, null, null)
+                      c?.use {
+                          if (it.moveToFirst()) return it.getString(0)
+                      }
+                  } catch (e: Exception) {
+                  }
+                  return addr
+              }
+
               private fun confirmCall(target: String) {
                   val c = findContact(target)
                   if (c == null) { say("ما لقيت جهة اتصال باسم " + target); return }
@@ -449,6 +584,114 @@ jobs:
                   } catch (e: Exception) {
                       log("فشل الإرسال: " + e.message)
                   }
+              }
+
+              private fun readSms(target: String, count: String) {
+                  if (checkSelfPermission(Manifest.permission.READ_SMS) != PackageManager.PERMISSION_GRANTED) {
+                      say("صلاحية قراءة الرسائل غير مفعّلة")
+                      return
+                  }
+                  val n = (normalizeDigits(count).filter { it.isDigit() }.toIntOrNull() ?: 5).coerceIn(1, 15)
+                  var fn = ""
+                  if (target.isNotBlank()) {
+                      val c = findContact(target)
+                      if (c == null) { say("ما لقيت جهة اتصال باسم " + target); return }
+                      fn = c.second.filter { it.isDigit() }.takeLast(9)
+                  }
+                  val filterNum = fn
+                  val sb = StringBuilder()
+                  var found = 0
+                  try {
+                      val cur = contentResolver.query(Uri.parse("content://sms/inbox"), arrayOf("address", "body", "date"), null, null, "date DESC")
+                      cur?.use {
+                          while (it.moveToNext() && found < n) {
+                              val addr = it.getString(0) ?: ""
+                              if (filterNum.isNotEmpty() && !addr.filter { ch -> ch.isDigit() }.endsWith(filterNum)) continue
+                              val body = (it.getString(1) ?: "").take(400)
+                              sb.append("من ").append(senderName(addr)).append(": ").append(body).append("\n")
+                              found++
+                          }
+                      }
+                  } catch (e: Exception) {
+                      log("فشلت قراءة الرسائل: " + e.message)
+                      return
+                  }
+                  if (found == 0) { say("ما لقيت رسائل"); return }
+                  say("لحظة، أقرأ " + found + " رسالة")
+                  val prompt = "لخص هذه الرسائل الواردة بالعربية البسيطة وباختصار، واذكر اسم المرسل لكل رسالة. إن وجدت رمز تحقق فاذكر أنها رسالة تحقق من غير ذكر الرمز:\n" + sb.toString()
+                  askPlain(prompt, false) { say(it); appendResult(it) }
+              }
+
+              private fun openUrl(t: String) {
+                  val s = t.trim()
+                  if (s.isBlank()) { say("ما فهمت الموقع"); return }
+                  val url = if (s.startsWith("http")) s
+                      else if (!s.contains(" ") && s.contains(".")) "https://" + s
+                      else "https://www.google.com/search?q=" + Uri.encode(s)
+                  say("أفتح " + s)
+                  try {
+                      startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                  } catch (e: Exception) {
+                      log("ما قدرت أفتح الرابط: " + e.message)
+                  }
+              }
+
+              private fun confirmDownload(t: String) {
+                  val u = t.trim()
+                  if (!u.startsWith("http")) { say("أحتاج رابط مباشر للملف"); return }
+                  say("هل أحمّل هذا الملف؟")
+                  AlertDialog.Builder(this)
+                      .setTitle("تحميل ملف")
+                      .setMessage(u)
+                      .setPositiveButton("حمّل") { _, _ -> doDownload(u) }
+                      .setNegativeButton("إلغاء", null)
+                      .show()
+              }
+
+              private fun doDownload(u: String) {
+                  try {
+                      val name = Uri.parse(u).lastPathSegment ?: "file"
+                      val r = DownloadManager.Request(Uri.parse(u))
+                      r.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                      r.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name)
+                      (getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(r)
+                      say("بدأ تحميل " + name)
+                  } catch (e: Exception) {
+                      log("فشل التحميل: " + e.message)
+                  }
+              }
+
+              private fun summarizeUrl(u: String, ask: String) {
+                  val s = u.trim()
+                  if (s.isBlank()) { say("ما فهمت الرابط"); return }
+                  val url = if (s.startsWith("http")) s else "https://" + s
+                  say("لحظة، أقرأ الصفحة")
+                  thread {
+                      try {
+                          val c = URL(url).openConnection() as HttpURLConnection
+                          c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14)")
+                          c.connectTimeout = 15000
+                          c.readTimeout = 20000
+                          c.instanceFollowRedirects = true
+                          val html = c.inputStream.bufferedReader().use { it.readText() }.take(600000)
+                          val text = html.replace(Regex("(?is)<(script|style|noscript)[^>]*>.*?</\\1>"), " ")
+                              .replace(Regex("(?s)<[^>]+>"), " ")
+                              .replace(Regex("&[a-z#0-9]+;"), " ")
+                              .replace(Regex("\\s+"), " ")
+                              .trim().take(12000)
+                          if (text.length < 200) { log("ما قدرت أقرأ محتوى الصفحة"); return@thread }
+                          val prompt = (if (ask.isBlank()) "لخص هذه الصفحة" else ask) + ":\n" + text
+                          askPlain(prompt, false) { say(it); appendResult(it) }
+                      } catch (e: Exception) {
+                          log("فشل فتح الصفحة: " + e.message)
+                      }
+                  }
+              }
+
+              private fun research(q: String) {
+                  if (q.isBlank()) { say("ما فهمت السؤال"); return }
+                  say("أبحث لك")
+                  askPlain(q, true) { say(it); appendResult(it) }
               }
           }
           EOF
