@@ -48,7 +48,7 @@ jobs:
                   minSdk = 26
                   targetSdk = 34
                   versionCode = 1
-                  versionName = "1.2"
+                  versionName = "1.3"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -117,13 +117,20 @@ jobs:
               private var recognizer: SpeechRecognizer? = null
               private var tts: TextToSpeech? = null
               private val prefs by lazy { getSharedPreferences("agent", Context.MODE_PRIVATE) }
+              private val history = ArrayList<Pair<String, String>>()
 
               private val SYS = """أنت مساعد صوتي على تلفون أندرويد. رد دائماً بـ JSON فقط بهذا الشكل: {"action":"chat","target":"","message":"","reply":""}
           القيم الممكنة لـ action:
-          chat: محادثة أو سؤال عادي. ضع الجواب في reply بالعربية البسيطة وباختصار.
+          chat: محادثة أو سؤال عادي أو سؤال عن شيء ناقص. ضع الجواب في reply بالعربية البسيطة وباختصار.
           open_app: فتح تطبيق. target اسم التطبيق بالإنجليزية كما يظهر على التلفون مثل WhatsApp أو YouTube أو Chrome.
           call: اتصال. target اسم الشخص كما قاله المستخدم أو الرقم.
           send_sms: رسالة نصية. target اسم الشخص أو الرقم، و message نص الرسالة فقط.
+          remember: حفظ معلومة طلب المستخدم أن تتذكرها. message نص المعلومة بصيغة واضحة مثل: رقم أنس الملك 0912345678.
+          forget: نسيان معلومة محفوظة. target كلمة مفتاحية موجودة في المعلومة.
+          قواعد:
+          لا تحفظ كلمات السر ولا أرقام البطاقات ولا معلومات بنكية. ارفض ذلك بلطف بإجراء chat.
+          إذا كانت المعلومات المحفوظة تحتوي على رقم الشخص المطلوب فضع الرقم في target عند الاتصال أو الرسالة.
+          إذا ناقص شيء لتنفيذ الأمر مثل اسم الشخص أو نص الرسالة فاسأل عنه بإجراء chat، وستصلك إجابة المستخدم في الرسالة التالية.
           في reply ضع جملة قصيرة تؤكد ما ستفعله."""
 
               override fun onCreate(b: Bundle?) {
@@ -143,6 +150,16 @@ jobs:
                   mic.text = "🎤 اضغط وتكلم"
                   mic.textSize = 20f
                   mic.setOnClickListener { startListening() }
+                  val row = LinearLayout(this)
+                  row.orientation = LinearLayout.HORIZONTAL
+                  val memBtn = Button(this)
+                  memBtn.text = "🧠 الذاكرة"
+                  memBtn.setOnClickListener { showMem() }
+                  val newBtn = Button(this)
+                  newBtn.text = "🔄 محادثة جديدة"
+                  newBtn.setOnClickListener { history.clear(); log("بدأنا محادثة جديدة") }
+                  row.addView(memBtn, LinearLayout.LayoutParams(0, -2, 1f))
+                  row.addView(newBtn, LinearLayout.LayoutParams(0, -2, 1f))
                   status = TextView(this)
                   status.textSize = 16f
                   val scroll = ScrollView(this)
@@ -150,6 +167,7 @@ jobs:
                   root.addView(keyBox)
                   root.addView(modelBox)
                   root.addView(mic)
+                  root.addView(row)
                   root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
                   setContentView(root)
                   val need = listOf(
@@ -170,6 +188,48 @@ jobs:
               private fun say(s: String) {
                   log("المساعد: " + s)
                   runOnUiThread { tts?.speak(s, TextToSpeech.QUEUE_FLUSH, null, "a") }
+              }
+
+              private fun getMem(): List<String> =
+                  (prefs.getString("mem", "") ?: "").split("\n").filter { it.isNotBlank() }
+
+              private fun saveMem(l: List<String>) {
+                  prefs.edit().putString("mem", l.joinToString("\n")).apply()
+              }
+
+              private fun remember(fact: String, reply: String) {
+                  val f = fact.trim().replace("\n", " ")
+                  if (f.isBlank()) { say("ما فهمت إيش أتذكر"); return }
+                  val l = getMem().toMutableList()
+                  if (l.joinToString("\n").length + f.length > 4000) { say("الذاكرة ممتلئة، امسح بعضها"); return }
+                  l.add(f)
+                  saveMem(l)
+                  say(if (reply.isBlank()) "تمام، حفظت" else reply)
+              }
+
+              private fun forget(t: String) {
+                  val l = getMem()
+                  val key = t.trim().lowercase()
+                  if (key.isBlank()) { say("ما فهمت إيش أنسى"); return }
+                  val keep = l.filter { !it.lowercase().contains(key) }
+                  saveMem(keep)
+                  if (keep.size == l.size) say("ما لقيت شي عن " + t)
+                  else say("نسيت " + (l.size - keep.size) + " معلومة")
+              }
+
+              private fun showMem() {
+                  val l = getMem()
+                  val text = if (l.isEmpty()) "الذاكرة فاضية" else l.mapIndexed { i, s -> "" + (i + 1) + ". " + s }.joinToString("\n")
+                  AlertDialog.Builder(this)
+                      .setTitle("الذاكرة")
+                      .setMessage(text)
+                      .setPositiveButton("إغلاق", null)
+                      .setNegativeButton("مسح الكل") { _, _ ->
+                          saveMem(emptyList())
+                          history.clear()
+                          log("تم مسح الذاكرة")
+                      }
+                      .show()
               }
 
               private fun startListening() {
@@ -224,16 +284,23 @@ jobs:
                   return Pair(code, txt)
               }
 
+              private fun textPart(role: String, text: String): JSONObject =
+                  JSONObject().put("role", role).put("parts", JSONArray().put(JSONObject().put("text", text)))
+
               private fun askGemini(q: String) {
                   val key = prefs.getString("key", "") ?: ""
                   val chosen = (prefs.getString("model", "") ?: "").trim()
                   if (key.isBlank()) { log("اكتب مفتاح Gemini أولاً"); return }
+                  val mem = getMem()
+                  val sysText = if (mem.isEmpty()) SYS else SYS + "\n\nمعلومات محفوظة عن المستخدم:\n" + mem.joinToString("\n")
+                  val contents = JSONArray()
+                  for (h in history) contents.put(textPart(h.first, h.second))
+                  contents.put(textPart("user", q))
+                  val sys = JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sysText)))
+                  val gen = JSONObject().put("responseMimeType", "application/json")
+                  val body = JSONObject().put("system_instruction", sys).put("contents", contents).put("generationConfig", gen).toString()
                   thread {
                       try {
-                          val sys = JSONObject().put("parts", JSONArray().put(JSONObject().put("text", SYS)))
-                          val user = JSONObject().put("role", "user").put("parts", JSONArray().put(JSONObject().put("text", q)))
-                          val gen = JSONObject().put("responseMimeType", "application/json")
-                          val body = JSONObject().put("system_instruction", sys).put("contents", JSONArray().put(user)).put("generationConfig", gen).toString()
                           val models = listOf(chosen, "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest")
                               .filter { it.isNotBlank() }.distinct()
                           var lastErr = ""
@@ -245,7 +312,12 @@ jobs:
                                   if (code in 200..299) {
                                       val ans = JSONObject(txt).getJSONArray("candidates").getJSONObject(0)
                                           .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
-                                      runOnUiThread { handle(ans) }
+                                      runOnUiThread {
+                                          history.add(Pair("user", q))
+                                          history.add(Pair("model", ans))
+                                          while (history.size > 10) history.removeAt(0)
+                                          handle(ans)
+                                      }
                                       return@thread
                                   }
                                   lastErr = "خطأ " + code + " (" + m + "): " + txt.take(150)
@@ -280,6 +352,8 @@ jobs:
                       "open_app" -> openApp(target)
                       "call" -> confirmCall(target)
                       "send_sms" -> confirmSms(target, msg)
+                      "remember" -> remember(if (msg.isBlank()) target else msg, reply)
+                      "forget" -> forget(target)
                       else -> say(if (reply.isBlank()) raw else reply)
                   }
               }
