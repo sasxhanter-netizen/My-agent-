@@ -1653,4 +1653,293 @@ jobs:
                       val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
                       val id = cm.cameraIdList.firstOrNull { cm.getCameraCharacteristics(it).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true }
                       if (id == null) { say("ما لقيت فلاش في التلفون"); return }
-                      val on = t.tri
+                      val on = t.trim().lowercase() != "off"
+                      cm.setTorchMode(id, on)
+                      say(if (on) "شغلت الفلاش" else "طفيت الفلاش")
+                  } catch (e: Exception) {
+                      log("تعذر تشغيل الفلاش: " + e.message)
+                      say("ما قدرت أشغل الفلاش")
+                  }
+              }
+
+              private fun volume(t: String) {
+                  val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                  val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                  val s = t.trim().lowercase()
+                  val digits = normalizeDigits(s).filter { it.isDigit() }
+                  try {
+                      if (s == "up") {
+                          am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, 0)
+                          am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, AudioManager.FLAG_SHOW_UI)
+                      } else if (s == "down") {
+                          am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, 0)
+                          am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI)
+                      } else if (s == "max") {
+                          am.setStreamVolume(AudioManager.STREAM_MUSIC, max, AudioManager.FLAG_SHOW_UI)
+                      } else if (s == "mute") {
+                          am.setStreamVolume(AudioManager.STREAM_MUSIC, 0, AudioManager.FLAG_SHOW_UI)
+                      } else if (digits.isNotEmpty()) {
+                          val p = digits.toInt().coerceIn(0, 100)
+                          am.setStreamVolume(AudioManager.STREAM_MUSIC, max * p / 100, AudioManager.FLAG_SHOW_UI)
+                      } else {
+                          say("ما فهمت مستوى الصوت")
+                          return
+                      }
+                      say("تم")
+                  } catch (e: Exception) {
+                      log("تعذر تغيير الصوت: " + e.message)
+                      say("ما قدرت أغيّر الصوت")
+                  }
+              }
+
+              private fun battery() {
+                  val i = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                  val lvl = i?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+                  val sc = i?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
+                  val st = i?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+                  val charging = st == BatteryManager.BATTERY_STATUS_CHARGING || st == BatteryManager.BATTERY_STATUS_FULL
+                  if (lvl < 0 || sc <= 0) {
+                      say("ما قدرت أعرف مستوى البطارية")
+                  } else {
+                      say("البطارية " + (lvl * 100 / sc) + " بالمية" + (if (charging) " وتشحن" else ""))
+                  }
+              }
+
+              private fun timeInfo(t: String) {
+                  val now = java.util.Date()
+                  val tf = java.text.SimpleDateFormat("h:mm a", Locale("ar"))
+                  val df = java.text.SimpleDateFormat("EEEE d MMMM yyyy", Locale("ar"))
+                  val k = t.trim().lowercase()
+                  if (k == "date") {
+                      say("اليوم " + df.format(now))
+                  } else if (k == "both") {
+                      say("اليوم " + df.format(now) + "، والساعة " + tf.format(now))
+                  } else {
+                      say("الساعة الآن " + tf.format(now))
+                  }
+              }
+
+              private fun openSettings(t: String) {
+                  val act = when (t.trim().lowercase()) {
+                      "wifi" -> Settings.ACTION_WIFI_SETTINGS
+                      "bluetooth" -> Settings.ACTION_BLUETOOTH_SETTINGS
+                      "location" -> Settings.ACTION_LOCATION_SOURCE_SETTINGS
+                      "display" -> Settings.ACTION_DISPLAY_SETTINGS
+                      "sound" -> Settings.ACTION_SOUND_SETTINGS
+                      "battery" -> Settings.ACTION_BATTERY_SAVER_SETTINGS
+                      else -> Settings.ACTION_SETTINGS
+                  }
+                  say("أفتح الإعدادات")
+                  try {
+                      launch(Intent(act))
+                  } catch (e: Exception) {
+                      log("تعذر فتح الإعدادات: " + e.message)
+                  }
+              }
+
+              private fun fileAccess(): Boolean {
+                  return if (Build.VERSION.SDK_INT >= 30) {
+                      Environment.isExternalStorageManager()
+                  } else {
+                      checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+                  }
+              }
+
+              @Suppress("DEPRECATION")
+              private fun searchFiles(q: String): List<File> {
+                  val tokens = normalizeDigits(q).lowercase().split(" ", "_", "-", ".").filter { it.isNotBlank() }
+                  if (tokens.isEmpty()) return emptyList()
+                  val roots = listOf(
+                      Environment.DIRECTORY_DOWNLOADS,
+                      Environment.DIRECTORY_DOCUMENTS,
+                      Environment.DIRECTORY_PICTURES,
+                      Environment.DIRECTORY_DCIM
+                  ).map { Environment.getExternalStoragePublicDirectory(it) }
+                  val all = ArrayList<File>()
+                  for (r in roots) {
+                      if (!r.exists()) continue
+                      r.walkTopDown().maxDepth(3).filter { it.isFile }.forEach { all.add(it) }
+                  }
+                  val strict = all.filter { f ->
+                      val n = f.name.lowercase()
+                      tokens.all { n.contains(it) }
+                  }
+                  val res = if (strict.isNotEmpty()) strict else all.filter { f ->
+                      val n = f.name.lowercase()
+                      tokens.any { n.contains(it) }
+                  }
+                  return res.sortedByDescending { it.lastModified() }.take(5)
+              }
+
+              private fun findFile(q: String, mode: String) {
+                  if (!fileAccess()) {
+                      say("صلاحية الملفات غير مفعّلة. افتح التطبيق واضغط زر الملفات")
+                      return
+                  }
+                  if (q.isBlank()) { say("ما فهمت اسم الملف"); return }
+                  val my = epoch
+                  startWork("أدور على الملف")
+                  thread {
+                      val res = try {
+                          searchFiles(q)
+                      } catch (e: Exception) {
+                          log("فشل البحث: " + e.message)
+                          emptyList<File>()
+                      }
+                      handler.post {
+                          if (my != epoch) return@post
+                          waiting = false
+                          if (res.isEmpty()) {
+                              say("ما لقيت ملف باسم " + q)
+                              return@post
+                          }
+                          val f = res[0]
+                          if (mode.trim().lowercase() == "summarize") {
+                              summarizeFile(f)
+                          } else {
+                              convo = false
+                              say("لقيت " + f.name + "، أفتحه")
+                              openFile(f)
+                          }
+                      }
+                  }
+              }
+
+              private fun openFile(f: File) {
+                  try {
+                      val uri = FileProvider.getUriForFile(this, "com.myagent.app.files", f)
+                      val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(f.extension.lowercase()) ?: "*/*"
+                      val i = Intent(Intent.ACTION_VIEW)
+                      i.setDataAndType(uri, mime)
+                      i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                      launch(i)
+                  } catch (e: Exception) {
+                      log("تعذر فتح الملف: " + e.message)
+                      say("ما قدرت أفتح الملف")
+                  }
+              }
+
+              private fun docxText(f: File): String {
+                  java.util.zip.ZipFile(f).use { z ->
+                      val e = z.getEntry("word/document.xml") ?: return ""
+                      val xml = z.getInputStream(e).bufferedReader().use { it.readText() }
+                      return xml.replace("</w:p>", "\n").replace(Regex("<[^>]+>"), "").take(12000)
+                  }
+              }
+
+              private fun summarizeFile(f: File) {
+                  val ext = f.extension.lowercase()
+                  val my = epoch
+                  startWork("أقرأ " + f.name)
+                  thread {
+                      try {
+                          val contents = JSONArray()
+                          val prompt = "لخص هذا الملف (" + f.name + ") بالعربية البسيطة وباختصار."
+                          val textExt = setOf("txt", "md", "csv", "json", "log", "xml", "html", "htm", "srt")
+                          val mediaExt = setOf("pdf", "png", "jpg", "jpeg", "webp")
+                          if (textExt.contains(ext)) {
+                              val t = f.readText().take(12000)
+                              contents.put(textPart("user", prompt + "\n\n" + t))
+                          } else if (ext == "docx") {
+                              val t = docxText(f)
+                              if (t.length < 20) throw Exception("الملف فارغ")
+                              contents.put(textPart("user", prompt + "\n\n" + t))
+                          } else if (mediaExt.contains(ext)) {
+                              if (f.length() > 15L * 1024 * 1024) throw Exception("الملف كبير")
+                              val mime = if (ext == "pdf") "application/pdf" else if (ext == "png") "image/png" else if (ext == "webp") "image/webp" else "image/jpeg"
+                              val b64 = Base64.encodeToString(f.readBytes(), Base64.NO_WRAP)
+                              val parts = JSONArray()
+                                  .put(JSONObject().put("text", prompt))
+                                  .put(JSONObject().put("inline_data", JSONObject().put("mime_type", mime).put("data", b64)))
+                              contents.put(JSONObject().put("role", "user").put("parts", parts))
+                          } else {
+                              throw Exception("نوع الملف غير مدعوم: " + ext)
+                          }
+                          handler.post {
+                              if (my == epoch) askPlainContents(contents) { say(it); appendResult(it) }
+                          }
+                      } catch (e: Exception) {
+                          log("فشل قراءة الملف: " + e.message)
+                          handler.post { waiting = false; convo = false; setState(IDLE); say("ما قدرت ألخص الملف") }
+                      }
+                  }
+              }
+
+              @Suppress("DEPRECATION")
+              private fun recentFiles() {
+                  if (!fileAccess()) {
+                      say("صلاحية الملفات غير مفعّلة. افتح التطبيق واضغط زر الملفات")
+                      return
+                  }
+                  val d = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                  val l = d.listFiles()?.filter { it.isFile }?.sortedByDescending { it.lastModified() }?.take(5) ?: emptyList()
+                  if (l.isEmpty()) {
+                      say("ما في ملفات في التنزيلات")
+                  } else {
+                      say("آخر الملفات: " + l.joinToString("، ") { it.name.take(50) })
+                  }
+              }
+
+              private fun readNotifs(target: String, count: String) {
+                  if (!NotifStore.connected) {
+                      say("فعّل صلاحية الإشعارات من التطبيق أولاً")
+                      return
+                  }
+                  val n = (normalizeDigits(count).filter { it.isDigit() }.toIntOrNull() ?: 8).coerceIn(1, 15)
+                  val t = target.trim().lowercase()
+                  val list = NotifStore.snapshot()
+                      .filter { t.isBlank() || it.app.lowercase().contains(t) || it.title.lowercase().contains(t) }
+                      .take(n)
+                  if (list.isEmpty()) {
+                      say("ما في إشعارات")
+                      return
+                  }
+                  val sb = StringBuilder()
+                  for (x in list) {
+                      sb.append(x.app).append(" - ").append(x.title).append(": ").append(x.text.take(300)).append("\n")
+                  }
+                  startWork("لحظة، ألخص إشعاراتك")
+                  askPlain("لخص هذه الإشعارات بالعربية البسيطة وباختصار وركز على المهم منها. لا تذكر رموز التحقق:\n" + sb.toString(), false) {
+                      say(it)
+                      appendResult(it)
+                  }
+              }
+
+              private fun confirmReplyNotif(target: String, text: String) {
+                  if (text.isBlank()) { say("ما فهمت نص الرد"); return }
+                  if (!NotifStore.connected) {
+                      say("فعّل صلاحية الإشعارات من التطبيق أولاً")
+                      return
+                  }
+                  val t = target.trim().lowercase()
+                  val item = NotifStore.snapshot().firstOrNull {
+                      it.reply != null && (t.isBlank() || it.app.lowercase().contains(t) || it.title.lowercase().contains(t))
+                  }
+                  if (item == null) { say("ما لقيت إشعار أقدر أرد عليه"); return }
+                  confirm("هل أرد على " + item.title + " في " + item.app + " بـ: " + text + "؟", text) { doReplyNotif(item, text) }
+              }
+
+              private fun doReplyNotif(item: NItem, text: String) {
+                  val ra = item.reply
+                  if (ra == null) { say("ما أقدر أرد على هذا الإشعار"); return }
+                  try {
+                      val ri = ra.remoteInputs
+                      val intent = Intent()
+                      val b = Bundle()
+                      for (r in ri) b.putCharSequence(r.resultKey, text)
+                      RemoteInput.addResultsToIntent(ri, intent, b)
+                      ra.actionIntent.send(this, 0, intent)
+                      say("تم الرد")
+                  } catch (e: Exception) {
+                      log("فشل الرد: " + e.message)
+                      say("ما قدرت أرد، ممكن الإشعار انتهى")
+                  }
+              }
+          }
+          EOF
+      - name: Build
+        run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MyAgent-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
