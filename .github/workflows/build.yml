@@ -19,6 +19,7 @@ jobs:
       - name: Generate project
         run: |
           mkdir -p app/src/main/java/com/myagent/app
+          mkdir -p app/src/main/res/xml
           cat > settings.gradle.kts <<'EOF'
           pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
           dependencyResolutionManagement { repositories { google(); mavenCentral() } }
@@ -48,7 +49,7 @@ jobs:
                   minSdk = 26
                   targetSdk = 34
                   versionCode = 1
-                  versionName = "1.5"
+                  versionName = "1.6"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -56,6 +57,15 @@ jobs:
               }
               kotlinOptions { jvmTarget = "17" }
           }
+          dependencies {
+              implementation("androidx.core:core:1.13.1")
+          }
+          EOF
+          cat > app/src/main/res/xml/file_paths.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <paths>
+              <root-path name="root" path="."/>
+          </paths>
           EOF
           cat > app/src/main/AndroidManifest.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
@@ -71,6 +81,9 @@ jobs:
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+              <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
+              <uses-permission android:name="android.permission.FLASHLIGHT"/>
+              <uses-permission android:name="com.android.alarm.permission.SET_ALARM"/>
               <queries>
                   <intent><action android:name="android.speech.RecognitionService"/></intent>
                   <intent><action android:name="android.intent.action.TTS_SERVICE"/></intent>
@@ -90,8 +103,284 @@ jobs:
                       android:name=".AgentService"
                       android:exported="false"
                       android:foregroundServiceType="microphone"/>
+                  <service
+                      android:name=".NotifService"
+                      android:exported="true"
+                      android:label="MyAgent"
+                      android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.service.notification.NotificationListenerService"/>
+                      </intent-filter>
+                  </service>
+                  <provider
+                      android:name="androidx.core.content.FileProvider"
+                      android:authorities="com.myagent.app.files"
+                      android:exported="false"
+                      android:grantUriPermissions="true">
+                      <meta-data
+                          android:name="android.support.FILE_PROVIDER_PATHS"
+                          android:resource="@xml/file_paths"/>
+                  </provider>
               </application>
           </manifest>
+          EOF
+          cat > app/src/main/java/com/myagent/app/AvatarView.kt <<'EOF'
+          package com.myagent.app
+
+          import android.content.Context
+          import android.graphics.Canvas
+          import android.graphics.Color
+          import android.graphics.Paint
+          import android.graphics.RectF
+          import android.view.View
+
+          class AvatarView(ctx: Context) : View(ctx) {
+              var state = 0
+              var surprised = false
+              var walking = false
+              private var hopAt = 0L
+              private val t0 = System.nanoTime()
+              private var attached = false
+              private val PI = Math.PI.toFloat()
+
+              private val body = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val ring = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val head = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val dark = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val line = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val ear = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val ball = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val rect = RectF()
+
+              init {
+                  head.color = 0xFFECEFF1.toInt()
+                  dark.color = 0xFF263238.toInt()
+                  ear.color = 0xFFB0BEC5.toInt()
+                  ball.color = 0xFFFFC107.toInt()
+                  ring.style = Paint.Style.STROKE
+                  line.style = Paint.Style.STROKE
+                  line.strokeCap = Paint.Cap.ROUND
+              }
+
+              fun hop() {
+                  hopAt = System.nanoTime()
+              }
+
+              private fun hopping(): Boolean = hopAt != 0L && (System.nanoTime() - hopAt) < 450000000L
+
+              private fun sn(x: Float): Float = Math.sin(x.toDouble()).toFloat()
+
+              private fun cs(x: Float): Float = Math.cos(x.toDouble()).toFloat()
+
+              private fun stateColor(): Int = when (state) {
+                  1 -> 0xFF2E7D32.toInt()
+                  2 -> 0xFFEF6C00.toInt()
+                  3 -> 0xFF1565C0.toInt()
+                  else -> 0xFF455A64.toInt()
+              }
+
+              private val frame = object : Runnable {
+                  override fun run() {
+                      invalidate()
+                      if (attached) {
+                          val busy = state != 0 || walking || surprised || hopping()
+                          postDelayed(this, if (busy) 16L else 66L)
+                      }
+                  }
+              }
+
+              override fun onAttachedToWindow() {
+                  super.onAttachedToWindow()
+                  attached = true
+                  post(frame)
+              }
+
+              override fun onDetachedFromWindow() {
+                  attached = false
+                  removeCallbacks(frame)
+                  super.onDetachedFromWindow()
+              }
+
+              override fun onDraw(canvas: Canvas) {
+                  val w = width.toFloat()
+                  val h = height.toFloat()
+                  val s = Math.min(w, h)
+                  val cx = w / 2f
+                  val cy = h / 2f
+                  val now = System.nanoTime()
+                  val t = (now - t0) / 1e9f
+                  val r = s * 0.38f
+                  val col = stateColor()
+
+                  if (state == 1) {
+                      for (k in 0..1) {
+                          val ph = (t * 0.9f + k * 0.5f) % 1f
+                          val rad = r + (s * 0.5f - r) * ph
+                          ring.color = col
+                          ring.alpha = ((1f - ph) * 150f).toInt()
+                          ring.strokeWidth = s * 0.025f
+                          canvas.drawCircle(cx, cy, rad, ring)
+                      }
+                  }
+                  if (state == 2) {
+                      for (i in 0..2) {
+                          val a = t * 3.5f + i * 2.0944f
+                          body.color = Color.WHITE
+                          canvas.drawCircle(cx + r * 1.22f * cs(a), cy + r * 1.22f * sn(a), s * 0.035f, body)
+                      }
+                  }
+
+                  var yoff = 0f
+                  val hd = (now - hopAt) / 1e9f
+                  if (hopAt != 0L && hd < 0.45f) yoff = -Math.abs(sn(PI * hd / 0.45f)) * r * 0.5f
+                  var scale = 1f + 0.03f * sn(t * 2f)
+                  if (state == 1) scale = 1f + 0.06f * sn(t * 6f)
+                  if (surprised) scale = 1.1f
+
+                  canvas.save()
+                  canvas.translate(0f, yoff)
+                  if (walking) canvas.rotate(sn(t * 10f) * 6f, cx, cy)
+                  canvas.scale(scale, scale, cx, cy)
+
+                  body.color = col
+                  canvas.drawCircle(cx, cy, r, body)
+                  ring.color = Color.WHITE
+                  ring.alpha = 255
+                  ring.strokeWidth = s * 0.035f
+                  canvas.drawCircle(cx, cy, r, ring)
+
+                  canvas.drawCircle(cx - r * 0.68f, cy + r * 0.1f, r * 0.11f, ear)
+                  canvas.drawCircle(cx + r * 0.68f, cy + r * 0.1f, r * 0.11f, ear)
+
+                  val wob = sn(t * 3f) * r * (if (state == 1) 0.2f else 0.1f)
+                  line.color = 0xFFB0BEC5.toInt()
+                  line.strokeWidth = s * 0.025f
+                  canvas.drawLine(cx, cy - r * 0.4f, cx + wob, cy - r * 0.7f, line)
+                  canvas.drawCircle(cx + wob, cy - r * 0.7f, r * 0.09f, ball)
+
+                  rect.set(cx - r * 0.62f, cy - r * 0.4f, cx + r * 0.62f, cy + r * 0.56f)
+                  canvas.drawRoundRect(rect, r * 0.2f, r * 0.2f, head)
+
+                  var bl = 1f
+                  val ph2 = t % 3.7f
+                  if (ph2 < 0.16f) bl = 1f - sn(PI * ph2 / 0.16f) * 0.92f
+                  var er = r * 0.12f
+                  if (state == 1) er *= 1.3f
+                  if (surprised) er *= 1.5f
+                  val dx = if (state == 2) sn(t * 2f) * r * 0.06f else 0f
+                  val ex = r * 0.26f
+                  val ey = cy - r * 0.06f
+                  rect.set(cx - ex + dx - er, ey - er * bl, cx - ex + dx + er, ey + er * bl)
+                  canvas.drawOval(rect, dark)
+                  rect.set(cx + ex + dx - er, ey - er * bl, cx + ex + dx + er, ey + er * bl)
+                  canvas.drawOval(rect, dark)
+
+                  val my = cy + r * 0.3f
+                  line.color = 0xFF263238.toInt()
+                  line.strokeWidth = s * 0.03f
+                  if (surprised) {
+                      rect.set(cx - r * 0.08f, my - r * 0.1f, cx + r * 0.08f, my + r * 0.1f)
+                      canvas.drawOval(rect, dark)
+                  } else if (state == 3) {
+                      val hh = r * 0.04f + Math.abs(sn(t * 11f)) * r * 0.14f
+                      rect.set(cx - r * 0.14f, my - hh, cx + r * 0.14f, my + hh)
+                      canvas.drawOval(rect, dark)
+                  } else if (state == 1) {
+                      canvas.drawCircle(cx, my, r * 0.07f, line)
+                  } else if (state == 2) {
+                      canvas.drawLine(cx - r * 0.12f, my, cx + r * 0.12f, my, line)
+                  } else {
+                      rect.set(cx - r * 0.18f, my - r * 0.14f, cx + r * 0.18f, my + r * 0.12f)
+                      canvas.drawArc(rect, 20f, 140f, false, line)
+                  }
+                  canvas.restore()
+              }
+          }
+          EOF
+          cat > app/src/main/java/com/myagent/app/NotifService.kt <<'EOF'
+          package com.myagent.app
+
+          import android.app.Notification
+          import android.service.notification.NotificationListenerService
+          import android.service.notification.StatusBarNotification
+
+          class NItem(
+              val key: String,
+              val pkg: String,
+              val app: String,
+              val title: String,
+              val text: String,
+              val time: Long,
+              val reply: Notification.Action?
+          )
+
+          object NotifStore {
+              val items = ArrayList<NItem>()
+              @Volatile var connected = false
+
+              fun add(i: NItem) {
+                  synchronized(items) {
+                      items.removeAll { it.key == i.key }
+                      items.add(0, i)
+                      while (items.size > 40) items.removeAt(items.size - 1)
+                  }
+              }
+
+              fun snapshot(): List<NItem> = synchronized(items) { ArrayList(items) }
+          }
+
+          class NotifService : NotificationListenerService() {
+              override fun onListenerConnected() {
+                  NotifStore.connected = true
+                  try {
+                      val act = activeNotifications
+                      if (act != null) {
+                          for (s in act) handle(s)
+                      }
+                  } catch (e: Exception) {
+                  }
+              }
+
+              override fun onListenerDisconnected() {
+                  NotifStore.connected = false
+              }
+
+              override fun onNotificationPosted(sbn: StatusBarNotification?) {
+                  if (sbn != null) handle(sbn)
+              }
+
+              private fun handle(sbn: StatusBarNotification) {
+                  try {
+                      val n = sbn.notification
+                      if (sbn.packageName == packageName) return
+                      if ((n.flags and Notification.FLAG_GROUP_SUMMARY) != 0) return
+                      if (sbn.isOngoing) return
+                      val ex = n.extras
+                      val title = ex.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: ""
+                      val big = ex.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
+                      val text = big ?: ex.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
+                      if (title.isBlank() && text.isBlank()) return
+                      var reply: Notification.Action? = null
+                      val acts = n.actions
+                      if (acts != null) {
+                          for (a in acts) {
+                              val ri = a.remoteInputs
+                              if (ri != null && ri.isNotEmpty()) {
+                                  reply = a
+                                  break
+                              }
+                          }
+                      }
+                      val app = try {
+                          packageManager.getApplicationLabel(packageManager.getApplicationInfo(sbn.packageName, 0)).toString()
+                      } catch (e: Exception) {
+                          sbn.packageName
+                      }
+                      NotifStore.add(NItem(sbn.key, sbn.packageName, app, title, text, sbn.postTime, reply))
+                  } catch (e: Exception) {
+                  }
+              }
+          }
           EOF
           cat > app/src/main/java/com/myagent/app/MainActivity.kt <<'EOF'
           package com.myagent.app
@@ -142,15 +431,18 @@ jobs:
                   row.orientation = LinearLayout.HORIZONTAL
                   val memBtn = Button(this)
                   memBtn.text = "🧠 الذاكرة"
+                  memBtn.textSize = 12f
                   memBtn.setOnClickListener { showMem() }
                   val newBtn = Button(this)
                   newBtn.text = "🔄 جديدة"
+                  newBtn.textSize = 12f
                   newBtn.setOnClickListener {
                       Bus.resetHistory = true
                       Bus.post("بدأنا محادثة جديدة")
                   }
                   val modelsBtn = Button(this)
                   modelsBtn.text = "🔃 موديلات"
+                  modelsBtn.textSize = 12f
                   modelsBtn.setOnClickListener {
                       savePrefs()
                       prefs.edit().putLong("mts", 0L).apply()
@@ -164,6 +456,38 @@ jobs:
                   row.addView(memBtn, LinearLayout.LayoutParams(0, -2, 1f))
                   row.addView(newBtn, LinearLayout.LayoutParams(0, -2, 1f))
                   row.addView(modelsBtn, LinearLayout.LayoutParams(0, -2, 1f))
+
+                  val row2 = LinearLayout(this)
+                  row2.orientation = LinearLayout.HORIZONTAL
+                  val filesBtn = Button(this)
+                  filesBtn.text = "📁 الملفات"
+                  filesBtn.textSize = 12f
+                  filesBtn.setOnClickListener { openFilesAccess() }
+                  val notifBtn = Button(this)
+                  notifBtn.text = "🔔 الإشعارات"
+                  notifBtn.textSize = 12f
+                  notifBtn.setOnClickListener {
+                      try {
+                          startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                          Bus.post("فعّل MyAgent في قائمة الوصول للإشعارات")
+                      } catch (e: Exception) {
+                          Bus.post("تعذر فتح الإعدادات: " + e.message)
+                      }
+                  }
+                  val wanderBtn = Button(this)
+                  wanderBtn.textSize = 12f
+                  fun refreshWander() {
+                      wanderBtn.text = if (prefs.getBoolean("wander", true)) "🚶 تجول: شغال" else "🚶 تجول: متوقف"
+                  }
+                  wanderBtn.setOnClickListener {
+                      prefs.edit().putBoolean("wander", !prefs.getBoolean("wander", true)).apply()
+                      refreshWander()
+                  }
+                  refreshWander()
+                  row2.addView(filesBtn, LinearLayout.LayoutParams(0, -2, 1f))
+                  row2.addView(notifBtn, LinearLayout.LayoutParams(0, -2, 1f))
+                  row2.addView(wanderBtn, LinearLayout.LayoutParams(0, -2, 1f))
+
                   status = TextView(this)
                   status.textSize = 16f
                   val scroll = ScrollView(this)
@@ -173,6 +497,7 @@ jobs:
                   root.addView(startBtn)
                   root.addView(stopBtn)
                   root.addView(row)
+                  root.addView(row2)
                   root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
                   setContentView(root)
                   val need = allPerms().filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
@@ -188,6 +513,23 @@ jobs:
                   l.add(Manifest.permission.READ_SMS)
                   if (Build.VERSION.SDK_INT >= 33) l.add(Manifest.permission.POST_NOTIFICATIONS)
                   return l
+              }
+
+              private fun openFilesAccess() {
+                  try {
+                      if (Build.VERSION.SDK_INT >= 30) {
+                          if (android.os.Environment.isExternalStorageManager()) {
+                              Bus.post("صلاحية الملفات مفعّلة بالفعل ✅")
+                              return
+                          }
+                          startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:" + packageName)))
+                          Bus.post("فعّل السماح بالوصول لكل الملفات ثم ارجع")
+                      } else {
+                          requestPermissions(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE), 3)
+                      }
+                  } catch (e: Exception) {
+                      Bus.post("تعذر فتح الإعدادات: " + e.message)
+                  }
               }
 
               private fun savePrefs() {
@@ -227,7 +569,7 @@ jobs:
                   }
                   try {
                       startForegroundService(Intent(this, AgentService::class.java))
-                      Bus.post("تم تشغيل الأفاتار. اضغط زر Home وستجد الدائرة 🤖 فوق الشاشة.")
+                      Bus.post("تم تشغيل الأفاتار. اضغط زر Home وستجد الروبوت 🤖 فوق الشاشة.")
                   } catch (e: Exception) {
                       Bus.post("تعذر تشغيل الخدمة: " + e.message)
                   }
@@ -253,28 +595,38 @@ jobs:
           package com.myagent.app
 
           import android.Manifest
+          import android.animation.Animator
+          import android.animation.AnimatorListenerAdapter
+          import android.animation.ValueAnimator
           import android.app.DownloadManager
           import android.app.Notification
           import android.app.NotificationChannel
           import android.app.NotificationManager
+          import android.app.RemoteInput
           import android.app.Service
           import android.content.Context
           import android.content.Intent
+          import android.content.IntentFilter
           import android.content.SharedPreferences
           import android.content.pm.PackageManager
           import android.content.pm.ServiceInfo
           import android.graphics.Color
           import android.graphics.PixelFormat
           import android.graphics.drawable.GradientDrawable
+          import android.hardware.camera2.CameraCharacteristics
+          import android.hardware.camera2.CameraManager
+          import android.media.AudioManager
           import android.net.ConnectivityManager
           import android.net.NetworkCapabilities
           import android.net.Uri
+          import android.os.BatteryManager
           import android.os.Build
           import android.os.Bundle
           import android.os.Environment
           import android.os.Handler
           import android.os.IBinder
           import android.os.Looper
+          import android.provider.AlarmClock
           import android.provider.ContactsContract
           import android.provider.Settings
           import android.speech.RecognitionListener
@@ -283,15 +635,19 @@ jobs:
           import android.speech.tts.TextToSpeech
           import android.speech.tts.UtteranceProgressListener
           import android.telephony.SmsManager
+          import android.util.Base64
           import android.view.Gravity
           import android.view.MotionEvent
           import android.view.View
           import android.view.WindowManager
+          import android.webkit.MimeTypeMap
           import android.widget.Button
           import android.widget.LinearLayout
           import android.widget.TextView
+          import androidx.core.content.FileProvider
           import org.json.JSONArray
           import org.json.JSONObject
+          import java.io.File
           import java.net.HttpURLConnection
           import java.net.URL
           import java.util.Locale
@@ -360,8 +716,10 @@ jobs:
               private var tts: TextToSpeech? = null
               private var ttsReady = false
               private var recognizer: SpeechRecognizer? = null
-              private var avatar: TextView? = null
-              private var avatarBg: GradientDrawable? = null
+              private var avatar: AvatarView? = null
+              private var avLp: WindowManager.LayoutParams? = null
+              private var wanderAnim: ValueAnimator? = null
+              private var touching = false
               private var panel: LinearLayout? = null
               private var panelText: TextView? = null
               private var panelBtns: LinearLayout? = null
@@ -378,6 +736,13 @@ jobs:
               private val history = ArrayList<Pair<String, String>>()
               private val hideRunnable = Runnable { if (!awaitingConfirm) hidePanel() }
 
+              private val wanderRunnable = object : Runnable {
+                  override fun run() {
+                      try { doWander() } catch (e: Exception) {}
+                      handler.postDelayed(this, (25000L..45000L).random())
+                  }
+              }
+
               private val SYS_PLAIN = "أنت مساعد صوتي على تلفون أندرويد. أجب بالعربية البسيطة وباختصار (ثلاث جمل كحد أقصى) من غير تنسيق أو رموز أو روابط."
 
               private val SYS = """أنت مساعد صوتي على تلفون أندرويد. المحادثة صوتية ومستمرة، فاجعل ردودك قصيرة جداً. رد دائماً بـ JSON فقط بهذا الشكل: {"action":"chat","target":"","message":"","reply":""}
@@ -391,11 +756,22 @@ jobs:
           download: تحميل ملف. target رابط الملف المباشر.
           summarize_url: تلخيص صفحة ويب. target الرابط. message ما يطلبه المستخدم بالتحديد إن وجد.
           research: سؤال يحتاج بحثاً في الإنترنت أو معلومات حديثة أو شرح موضوع. target نص السؤال كاملاً.
+          alarm: ضبط منبه. target الوقت بنظام 24 ساعة بصيغة HH:MM مثل 06:30، و message وصف المنبه إن وجد.
+          timer: مؤقت تنازلي. target المدة بالثواني كرقم فقط (10 دقائق = 600).
+          flashlight: الفلاش. target كلمة on أو off.
+          volume: صوت الوسائط. target واحدة من: up أو down أو max أو mute أو رقم من 0 إلى 100.
+          battery: السؤال عن البطارية.
+          time: السؤال عن الوقت أو التاريخ. target كلمة time أو date أو both.
+          settings: فتح إعدادات. target واحدة من: wifi أو bluetooth أو location أو display أو sound أو battery أو general.
+          find_file: البحث عن ملف وفتحه أو تلخيصه. target كلمات من اسم الملف كما يُكتب في الاسم (بالإنجليزية إن كان الاسم إنجليزياً)، و message كلمة summarize إن طلب التلخيص وإلا open.
+          recent_files: آخر الملفات المحمّلة.
+          read_notifications: قراءة الإشعارات وتلخيصها. target اسم التطبيق بالإنجليزية أو اسم الشخص إن حدده وإلا فارغ. message عدد الإشعارات إن ذكره.
+          reply_notification: الرد على إشعار مثل رسالة واتساب بالرد السريع. target اسم التطبيق بالإنجليزية أو اسم المرسل، و message نص الرد.
           remember: حفظ معلومة طلب المستخدم أن تتذكرها. message نص المعلومة بصيغة واضحة مثل: رقم أنس الملك 0912345678.
           forget: نسيان معلومة محفوظة. target كلمة مفتاحية موجودة في المعلومة.
           end: عندما يريد المستخدم إنهاء المحادثة مثل خلاص أو شكراً أو سلام أو كفاية.
           قواعد:
-          لا تطلب تأكيداً بنفسك، فالتطبيق يسأل المستخدم عن التأكيد قبل الاتصال والإرسال والتحميل.
+          لا تطلب تأكيداً بنفسك، فالتطبيق يسأل المستخدم عن التأكيد قبل الاتصال والإرسال والتحميل والرد على الإشعارات.
           لا تحفظ كلمات السر ولا أرقام البطاقات ولا معلومات بنكية. ارفض ذلك بلطف بإجراء chat.
           إذا كانت المعلومات المحفوظة تحتوي على رقم الشخص المطلوب فضع الرقم في target عند الاتصال أو الرسالة.
           إذا ناقص شيء لتنفيذ الأمر مثل اسم الشخص أو نص الرسالة فاسأل عنه بإجراء chat، وستصلك إجابة المستخدم في الرسالة التالية.
@@ -421,12 +797,14 @@ jobs:
                       return
                   }
                   buildAvatar()
+                  handler.postDelayed(wanderRunnable, 20000L)
                   log("الأفاتار شغال. اضغط عليه وتكلم، واضغط مطولاً لإغلاقه.")
               }
 
               override fun onDestroy() {
                   Bus.running = false
                   handler.removeCallbacksAndMessages(null)
+                  try { wanderAnim?.cancel() } catch (e: Exception) {}
                   try { recognizer?.destroy() } catch (e: Exception) {}
                   try { tts?.shutdown() } catch (e: Exception) {}
                   try { avatar?.let { wm.removeView(it) } } catch (e: Exception) {}
@@ -440,7 +818,7 @@ jobs:
                   nm.createNotificationChannel(NotificationChannel(ch, "المساعد", NotificationManager.IMPORTANCE_LOW))
                   val n = Notification.Builder(this, ch)
                       .setContentTitle("المساعد شغال")
-                      .setContentText("اضغط على الدائرة العائمة وتكلم")
+                      .setContentText("اضغط على الروبوت العائم وتكلم")
                       .setSmallIcon(android.R.drawable.ic_btn_speak_now)
                       .build()
                   if (Build.VERSION.SDK_INT >= 30) {
@@ -462,16 +840,8 @@ jobs:
               }
 
               private fun buildAvatar() {
-                  val size = dp(64)
-                  val tv = TextView(this)
-                  tv.gravity = Gravity.CENTER
-                  tv.textSize = 30f
-                  tv.text = "🤖"
-                  val bg = GradientDrawable()
-                  bg.shape = GradientDrawable.OVAL
-                  bg.setColor(0xFF455A64.toInt())
-                  bg.setStroke(dp(3), Color.WHITE)
-                  tv.background = bg
+                  val size = dp(72)
+                  val av = AvatarView(this)
                   val lp = WindowManager.LayoutParams(
                       size, size,
                       WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
@@ -481,7 +851,7 @@ jobs:
                   lp.gravity = Gravity.TOP or Gravity.START
                   lp.x = prefs.getInt("ax", dp(8))
                   lp.y = prefs.getInt("ay", dp(300))
-                  tv.setOnTouchListener(object : View.OnTouchListener {
+                  av.setOnTouchListener(object : View.OnTouchListener {
                       var sx = 0f
                       var sy = 0f
                       var ox = 0
@@ -491,6 +861,9 @@ jobs:
                       override fun onTouch(v: View, e: MotionEvent): Boolean {
                           when (e.action) {
                               MotionEvent.ACTION_DOWN -> {
+                                  touching = true
+                                  wanderAnim?.cancel()
+                                  av.walking = false
                                   sx = e.rawX
                                   sy = e.rawY
                                   ox = lp.x
@@ -504,6 +877,7 @@ jobs:
                                   val dy = (e.rawY - sy).toInt()
                                   if (Math.abs(dx) > dp(6) || Math.abs(dy) > dp(6)) moved = true
                                   if (moved) {
+                                      av.surprised = true
                                       lp.x = ox + dx
                                       lp.y = oy + dy
                                       try { wm.updateViewLayout(v, lp) } catch (ex: Exception) {}
@@ -511,8 +885,15 @@ jobs:
                                   return true
                               }
                               MotionEvent.ACTION_UP -> {
+                                  touching = false
+                                  av.surprised = false
                                   if (!moved) {
-                                      if (System.currentTimeMillis() - t0 > 700) quit() else onTap()
+                                      if (System.currentTimeMillis() - t0 > 700) {
+                                          quit()
+                                      } else {
+                                          av.hop()
+                                          onTap()
+                                      }
                                   } else {
                                       val sw = resources.displayMetrics.widthPixels
                                       lp.x = if (lp.x + size / 2 < sw / 2) dp(4) else sw - size - dp(4)
@@ -521,29 +902,59 @@ jobs:
                                   }
                                   return true
                               }
+                              MotionEvent.ACTION_CANCEL -> {
+                                  touching = false
+                                  av.surprised = false
+                                  return true
+                              }
                           }
                           return false
                       }
                   })
-                  wm.addView(tv, lp)
-                  avatar = tv
-                  avatarBg = bg
+                  wm.addView(av, lp)
+                  avatar = av
+                  avLp = lp
+              }
+
+              private fun doWander() {
+                  if (!prefs.getBoolean("wander", true)) return
+                  if (state != IDLE || waiting || awaitingConfirm || convo || touching || panelShown) return
+                  val lp = avLp ?: return
+                  val av = avatar ?: return
+                  val dm = resources.displayMetrics
+                  val size = lp.width
+                  val x1 = if (Math.random() < 0.5) dp(4) else dm.widthPixels - size - dp(4)
+                  val y1 = dp(120) + (Math.random() * (dm.heightPixels - dp(120) - dp(260))).toInt()
+                  val x0 = lp.x
+                  val y0 = lp.y
+                  val dist = Math.hypot((x1 - x0).toDouble(), (y1 - y0).toDouble())
+                  wanderAnim?.cancel()
+                  val a = ValueAnimator.ofFloat(0f, 1f)
+                  a.duration = (800 + dist * 0.8).toLong().coerceAtMost(3500L)
+                  a.addUpdateListener {
+                      val f = it.animatedValue as Float
+                      lp.x = x0 + ((x1 - x0) * f).toInt()
+                      lp.y = y0 + ((y1 - y0) * f).toInt()
+                      try { wm.updateViewLayout(av, lp) } catch (e: Exception) {}
+                  }
+                  a.addListener(object : AnimatorListenerAdapter() {
+                      override fun onAnimationEnd(an: Animator) {
+                          av.walking = false
+                          prefs.edit().putInt("ax", lp.x).putInt("ay", lp.y).apply()
+                      }
+                  })
+                  av.walking = true
+                  wanderAnim = a
+                  a.start()
               }
 
               private fun setState(s: Int) {
                   state = s
-                  val emoji: String
-                  val color: Int
-                  when (s) {
-                      LISTENING -> { emoji = "👂"; color = 0xFF2E7D32.toInt() }
-                      THINKING -> { emoji = "🤔"; color = 0xFFEF6C00.toInt() }
-                      SPEAKING -> { emoji = "🗣️"; color = 0xFF1565C0.toInt() }
-                      else -> { emoji = "🤖"; color = 0xFF455A64.toInt() }
+                  avatar?.state = s
+                  if (s != IDLE) {
+                      wanderAnim?.cancel()
+                      avatar?.walking = false
                   }
-                  avatar?.text = emoji
-                  avatarBg?.setColor(color)
-                  val sc = if (s == LISTENING) 1.2f else 1f
-                  avatar?.animate()?.scaleX(sc)?.scaleY(sc)?.setDuration(250)?.start()
               }
 
               private fun showPanel(text: String, buttons: Boolean) {
@@ -826,7 +1237,7 @@ jobs:
                   c.setRequestProperty("x-goog-api-key", key)
                   c.doOutput = true
                   c.connectTimeout = 20000
-                  c.readTimeout = 60000
+                  c.readTimeout = 90000
                   c.outputStream.use { it.write(body.toByteArray()) }
                   val code = c.responseCode
                   val txt = (if (code in 200..299) c.inputStream else c.errorStream).bufferedReader().use { it.readText() }
@@ -933,8 +1344,11 @@ jobs:
               }
 
               private fun askPlain(prompt: String, search: Boolean, done: (String) -> Unit) {
+                  askPlainContents(JSONArray().put(textPart("user", prompt)), search, done)
+              }
+
+              private fun askPlainContents(contents: JSONArray, search: Boolean = false, done: (String) -> Unit) {
                   val my = epoch
-                  val contents = JSONArray().put(textPart("user", prompt))
                   thread {
                       val ans = gen(SYS_PLAIN, contents, false, search)
                       handler.post {
@@ -968,6 +1382,17 @@ jobs:
                       "download" -> confirmDownload(target)
                       "summarize_url" -> summarizeUrl(target, msg)
                       "research" -> research(if (target.isBlank()) msg else target)
+                      "alarm" -> setAlarm(target, msg)
+                      "timer" -> setTimer(target, msg)
+                      "flashlight" -> flashlight(target)
+                      "volume" -> volume(target)
+                      "battery" -> battery()
+                      "time" -> timeInfo(target)
+                      "settings" -> { convo = false; openSettings(target) }
+                      "find_file" -> findFile(target, msg)
+                      "recent_files" -> recentFiles()
+                      "read_notifications" -> readNotifs(target, msg)
+                      "reply_notification" -> confirmReplyNotif(target, msg)
                       "remember" -> remember(if (msg.isBlank()) target else msg, reply)
                       "forget" -> forget(target)
                       "end" -> { convo = false; say(if (reply.isBlank()) "في أمان الله" else reply) }
@@ -1187,11 +1612,45 @@ jobs:
                   startWork("أبحث لك")
                   askPlain(q, true) { say(it); appendResult(it) }
               }
-          }
-          EOF
-      - name: Build
-        run: gradle assembleDebug --no-daemon
-      - uses: actions/upload-artifact@v4
-        with:
-          name: MyAgent-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+
+              private fun setAlarm(t: String, label: String) {
+                  val parts = normalizeDigits(t).trim().split(":")
+                  val h = parts.getOrNull(0)?.trim()?.toIntOrNull()
+                  val m = parts.getOrNull(1)?.trim()?.toIntOrNull() ?: 0
+                  if (h == null || h !in 0..23 || m !in 0..59) { say("ما فهمت الوقت"); return }
+                  val i = Intent(AlarmClock.ACTION_SET_ALARM)
+                  i.putExtra(AlarmClock.EXTRA_HOUR, h)
+                  i.putExtra(AlarmClock.EXTRA_MINUTES, m)
+                  i.putExtra(AlarmClock.EXTRA_MESSAGE, if (label.isBlank()) "منبه" else label)
+                  i.putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                  try {
+                      launch(i)
+                      say("ضبطت المنبه على " + h + ":" + (if (m < 10) "0" else "") + m)
+                  } catch (e: Exception) {
+                      log("تعذر ضبط المنبه: " + e.message)
+                      say("ما قدرت أضبط المنبه")
+                  }
+              }
+
+              private fun setTimer(t: String, label: String) {
+                  val secs = normalizeDigits(t).filter { it.isDigit() }.toIntOrNull()
+                  if (secs == null || secs <= 0) { say("ما فهمت مدة المؤقت"); return }
+                  val i = Intent(AlarmClock.ACTION_SET_TIMER)
+                  i.putExtra(AlarmClock.EXTRA_LENGTH, secs)
+                  i.putExtra(AlarmClock.EXTRA_MESSAGE, if (label.isBlank()) "مؤقت" else label)
+                  i.putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                  try {
+                      launch(i)
+                      if (secs >= 60) say("ضبطت مؤقت " + (secs / 60) + " دقيقة") else say("ضبطت مؤقت " + secs + " ثانية")
+                  } catch (e: Exception) {
+                      log("تعذر ضبط المؤقت: " + e.message)
+                      say("ما قدرت أضبط المؤقت")
+                  }
+              }
+
+              private fun flashlight(t: String) {
+                  try {
+                      val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                      val id = cm.cameraIdList.firstOrNull { cm.getCameraCharacteristics(it).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true }
+                      if (id == null) { say("ما لقيت فلاش في التلفون"); return }
+                      val on = t.tri
