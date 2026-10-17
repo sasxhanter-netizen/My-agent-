@@ -782,6 +782,8 @@ jobs:
               }
           }
           EOF
+          # --- نهاية الجزء 1: الصق الجزء 2 بعد هذا السطر ---
+                    # --- الجزء 2 ---
           cat > app/src/main/java/com/myagent/app/AgentService.kt <<'EOF'
           package com.myagent.app
 
@@ -1599,6 +1601,10 @@ jobs:
                       }
                   }
               }
+          EOF
+          # --- نهاية الجزء 2: الصق الجزء 3 بعد هذا السطر ---
+                    # --- الجزء 3 ---
+          cat >> app/src/main/java/com/myagent/app/AgentService.kt <<'EOF'
 
               private fun handle(raw: String) {
                   val clean = raw.replace("```json", "").replace("```", "").trim()
@@ -2024,4 +2030,547 @@ jobs:
                   }
                   if (q.isBlank()) { say("ما فهمت اسم الملف"); return }
                   val my = epoch
-                  startWork
+                  startWork("أدور على الملف")
+                  thread {
+                      val res = try {
+                          searchFiles(q)
+                      } catch (e: Exception) {
+                          log("فشل البحث: " + e.message)
+                          emptyList<File>()
+                      }
+                      handler.post {
+                          if (my != epoch) return@post
+                          waiting = false
+                          if (res.isEmpty()) {
+                              say("ما لقيت ملف باسم " + q)
+                              return@post
+                          }
+                          val f = res[0]
+                          if (mode.trim().lowercase() == "summarize") {
+                              summarizeFile(f)
+                          } else {
+                              convo = false
+                              say("لقيت " + f.name + "، أفتحه")
+                              openFile(f)
+                          }
+                      }
+                  }
+              }
+
+              private fun openFile(f: File) {
+                  try {
+                      val uri = FileProvider.getUriForFile(this, "com.myagent.app.files", f)
+                      val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(f.extension.lowercase()) ?: "*/*"
+                      val i = Intent(Intent.ACTION_VIEW)
+                      i.setDataAndType(uri, mime)
+                      i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                      launch(i)
+                  } catch (e: Exception) {
+                      log("تعذر فتح الملف: " + e.message)
+                      say("ما قدرت أفتح الملف")
+                  }
+              }
+
+              private fun docxText(f: File): String {
+                  java.util.zip.ZipFile(f).use { z ->
+                      val e = z.getEntry("word/document.xml") ?: return ""
+                      val xml = z.getInputStream(e).bufferedReader().use { it.readText() }
+                      return xml.replace("</w:p>", "\n").replace(Regex("<[^>]+>"), "").take(12000)
+                  }
+              }
+
+              private fun summarizeFile(f: File) {
+                  val ext = f.extension.lowercase()
+                  val my = epoch
+                  startWork("أقرأ " + f.name)
+                  thread {
+                      try {
+                          val contents = JSONArray()
+                          val prompt = "لخص هذا الملف (" + f.name + ") بالعربية البسيطة وباختصار."
+                          val textExt = setOf("txt", "md", "csv", "json", "log", "xml", "html", "htm", "srt")
+                          val mediaExt = setOf("pdf", "png", "jpg", "jpeg", "webp")
+                          if (textExt.contains(ext)) {
+                              val t = f.readText().take(12000)
+                              contents.put(textPart("user", prompt + "\n\n" + t))
+                          } else if (ext == "docx") {
+                              val t = docxText(f)
+                              if (t.length < 20) throw Exception("الملف فارغ")
+                              contents.put(textPart("user", prompt + "\n\n" + t))
+                          } else if (mediaExt.contains(ext)) {
+                              if (f.length() > 15L * 1024 * 1024) throw Exception("الملف كبير")
+                              val mime = if (ext == "pdf") "application/pdf" else if (ext == "png") "image/png" else if (ext == "webp") "image/webp" else "image/jpeg"
+                              val b64 = Base64.encodeToString(f.readBytes(), Base64.NO_WRAP)
+                              val parts = JSONArray()
+                                  .put(JSONObject().put("text", prompt))
+                                  .put(JSONObject().put("inline_data", JSONObject().put("mime_type", mime).put("data", b64)))
+                              contents.put(JSONObject().put("role", "user").put("parts", parts))
+                          } else {
+                              throw Exception("نوع الملف غير مدعوم: " + ext)
+                          }
+                          handler.post {
+                              if (my == epoch) askPlainContents(contents) { say(it); appendResult(it) }
+                          }
+                      } catch (e: Exception) {
+                          log("فشل قراءة الملف: " + e.message)
+                          handler.post { waiting = false; convo = false; setState(IDLE); say("ما قدرت ألخص الملف") }
+                      }
+                  }
+              }
+
+              @Suppress("DEPRECATION")
+              private fun recentFiles() {
+                  if (!fileAccess()) {
+                      say("صلاحية الملفات غير مفعّلة. افتح التطبيق واضغط زر الملفات")
+                      return
+                  }
+                  val d = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                  val l = d.listFiles()?.filter { it.isFile }?.sortedByDescending { it.lastModified() }?.take(5) ?: emptyList()
+                  if (l.isEmpty()) {
+                      say("ما في ملفات في التنزيلات")
+                  } else {
+                      say("آخر الملفات: " + l.joinToString("، ") { it.name.take(50) })
+                  }
+              }
+
+              private fun readNotifs(target: String, count: String) {
+                  if (!NotifStore.connected) {
+                      say("فعّل صلاحية الإشعارات من التطبيق أولاً")
+                      return
+                  }
+                  val n = (normalizeDigits(count).filter { it.isDigit() }.toIntOrNull() ?: 8).coerceIn(1, 15)
+                  val t = target.trim().lowercase()
+                  val list = NotifStore.snapshot()
+                      .filter { t.isBlank() || it.app.lowercase().contains(t) || it.title.lowercase().contains(t) }
+                      .take(n)
+                  if (list.isEmpty()) {
+                      say("ما في إشعارات")
+                      return
+                  }
+                  val sb = StringBuilder()
+                  for (x in list) {
+                      sb.append(x.app).append(" - ").append(x.title).append(": ").append(x.text.take(300)).append("\n")
+                  }
+                  startWork("لحظة، ألخص إشعاراتك")
+                  askPlain("لخص هذه الإشعارات بالعربية البسيطة وباختصار وركز على المهم منها. لا تذكر رموز التحقق:\n" + sb.toString(), false) {
+                      say(it)
+                      appendResult(it)
+                  }
+              }
+
+              private fun confirmReplyNotif(target: String, text: String) {
+                  if (text.isBlank()) { say("ما فهمت نص الرد"); return }
+                  if (!NotifStore.connected) {
+                      say("فعّل صلاحية الإشعارات من التطبيق أولاً")
+                      return
+                  }
+                  val t = target.trim().lowercase()
+                  val item = NotifStore.snapshot().firstOrNull {
+                      it.reply != null && (t.isBlank() || it.app.lowercase().contains(t) || it.title.lowercase().contains(t))
+                  }
+                  if (item == null) { say("ما لقيت إشعار أقدر أرد عليه"); return }
+                  confirm("هل أرد على " + item.title + " في " + item.app + " بـ: " + text + "؟", text) { doReplyNotif(item, text) }
+              }
+
+              private fun doReplyNotif(item: NItem, text: String) {
+                  val ra = item.reply
+                  if (ra == null) { say("ما أقدر أرد على هذا الإشعار"); return }
+                  try {
+                      val ri = ra.remoteInputs
+                      val intent = Intent()
+                      val b = Bundle()
+                      for (r in ri) b.putCharSequence(r.resultKey, text)
+                      RemoteInput.addResultsToIntent(ri, intent, b)
+                      ra.actionIntent.send(this, 0, intent)
+                      say("تم الرد")
+                  } catch (e: Exception) {
+                      log("فشل الرد: " + e.message)
+                      say("ما قدرت أرد، ممكن الإشعار انتهى")
+                  }
+              }
+
+              private fun readScreenCmd() {
+                  val sc = ScreenService.inst
+                  if (sc == null) {
+                      say("فعّل خدمة إمكانية الوصول للتطبيق من الإعدادات أولاً")
+                      return
+                  }
+                  val my = epoch
+                  startWork("أقرأ الشاشة")
+                  thread {
+                      val scr = try { sc.readScreen() } catch (e: Exception) { null }
+                      handler.post {
+                          if (my != epoch) return@post
+                          if (scr == null || scr.text.isBlank()) {
+                              waiting = false
+                              say("ما لقيت شي أقرأه في الشاشة")
+                              return@post
+                          }
+                          if (scr.text == "BLOCKED") {
+                              waiting = false
+                              say("هذه الشاشة لتطبيق حساس ما أقرأه")
+                              return@post
+                          }
+                          askPlain("اشرح للمستخدم باختصار ما في هذه الشاشة وأهم ما يمكن فعله فيها:\n" + scr.text.take(6000), false) {
+                              say(it)
+                              appendResult(it)
+                          }
+                      }
+                  }
+              }
+
+              private fun screenCmd(t: String) {
+                  val sc = ScreenService.inst
+                  if (sc == null) {
+                      say("فعّل خدمة إمكانية الوصول للتطبيق من الإعدادات أولاً")
+                      return
+                  }
+                  val k = t.trim().lowercase()
+                  val ok = when (k) {
+                      "back" -> sc.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+                      "home" -> {
+                          convo = false
+                          sc.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
+                      }
+                      "recents" -> sc.performGlobalAction(AccessibilityService.GLOBAL_ACTION_RECENTS)
+                      "scroll_down" -> sc.scroll(true)
+                      "scroll_up" -> sc.scroll(false)
+                      else -> false
+                  }
+                  say(if (ok) "تم" else "ما قدرت أنفذ الأمر")
+              }
+
+              private fun agentStart(task: String) {
+                  if (task.isBlank()) { say("ما فهمت المهمة"); return }
+                  if (ScreenService.inst == null) {
+                      say("فعّل خدمة إمكانية الوصول للتطبيق من الإعدادات أولاً")
+                      return
+                  }
+                  confirm("هل أبدأ المهمة: " + task + "؟", "سأتحكم في الشاشة. اضغط على الروبوت في أي وقت لإيقافي.") { beginAgent(task) }
+              }
+
+              private fun beginAgent(task: String) {
+                  agentRunning = true
+                  agentSteps = 0
+                  agentTask = task
+                  agentLog.clear()
+                  convo = false
+                  waiting = true
+                  agentNext()
+              }
+
+              private fun agentEnd(msg: String) {
+                  agentRunning = false
+                  waiting = false
+                  setState(IDLE)
+                  say(msg)
+              }
+
+              private fun agentNext() {
+                  if (!agentRunning) return
+                  if (agentSteps >= 12) {
+                      agentEnd("وصلت للحد الأقصى من الخطوات، وقفت")
+                      return
+                  }
+                  val sc = ScreenService.inst
+                  if (sc == null) {
+                      agentEnd("خدمة إمكانية الوصول توقفت")
+                      return
+                  }
+                  setState(THINKING)
+                  val my = epoch
+                  thread {
+                      val scr = try { sc.readScreen() } catch (e: Exception) { null }
+                      handler.post {
+                          if (my != epoch || !agentRunning) return@post
+                          if (scr == null) {
+                              agentEnd("ما قدرت أقرأ الشاشة")
+                              return@post
+                          }
+                          if (scr.text == "BLOCKED") {
+                              agentEnd("هذه الشاشة لتطبيق حساس ما أتحكم فيه")
+                              return@post
+                          }
+                          agentNodes = scr.nodes
+                          agentDecide(scr)
+                      }
+                  }
+              }
+
+              private fun agentDecide(scr: ScreenInfo) {
+                  val my = epoch
+                  val sb = StringBuilder()
+                  sb.append("المهمة: ").append(agentTask).append("\n")
+                  sb.append("التطبيق الحالي: ").append(scr.pkg).append("\n")
+                  sb.append("الخطوات السابقة:\n")
+                  if (agentLog.isEmpty()) {
+                      sb.append("لا شيء\n")
+                  } else {
+                      for (l in agentLog) sb.append(l).append("\n")
+                  }
+                  sb.append("الشاشة الحالية:\n").append(scr.text.take(6000))
+                  val contents = JSONArray().put(textPart("user", sb.toString()))
+                  thread {
+                      val ans = gen(AGENT_SYS, contents, true, false)
+                      handler.post {
+                          if (my != epoch || !agentRunning) return@post
+                          if (ans == null) {
+                              agentEnd("ما قدرت أوصل للذكاء الاصطناعي")
+                              return@post
+                          }
+                          val j = try {
+                              JSONObject(ans.replace("```json", "").replace("```", "").trim())
+                          } catch (e: Exception) {
+                              null
+                          }
+                          if (j == null) {
+                              agentEnd("رد غير مفهوم من الذكاء الاصطناعي")
+                              return@post
+                          }
+                          agentAct(j)
+                      }
+                  }
+              }
+
+              private fun nodeLabel(idx: Int): String {
+                  val n = agentNodes.getOrNull(idx) ?: return ""
+                  val t = n.text?.toString() ?: ""
+                  val d = n.contentDescription?.toString() ?: ""
+                  return if (t.isNotBlank()) t else d
+              }
+
+              private fun isRisky(label: String): Boolean {
+                  val l = label.lowercase()
+                  val words = listOf(
+                      "send", "إرسال", "ارسال", "أرسل", "ارسل", "pay", "دفع", "ادفع", "buy", "شراء", "اشتر",
+                      "delete", "حذف", "احذف", "confirm", "تأكيد", "أكد", "order", "post", "نشر",
+                      "submit", "transfer", "تحويل", "call", "اتصال", "اتصل"
+                  )
+                  return words.any { l.contains(it) }
+              }
+
+              private fun describeStep(act: String, idx: Int, text: String, app: String, label: String): String {
+                  return when (act) {
+                      "click" -> "اضغط على «" + (if (label.isBlank()) "عنصر " + idx else label.take(40)) + "»"
+                      "type" -> "اكتب «" + text.take(60) + "»"
+                      "scroll_down" -> "انزل لتحت"
+                      "scroll_up" -> "اطلع لفوق"
+                      "back" -> "ارجع"
+                      "home" -> "الرئيسية"
+                      "open_app" -> "افتح " + app
+                      "enter" -> "اضغط زر الإدخال"
+                      "wait" -> "انتظر"
+                      else -> act
+                  }
+              }
+
+              private fun agentAct(j: JSONObject) {
+                  val act = j.optString("act", "fail")
+                  val idx = j.optInt("idx", -1)
+                  val text = j.optString("text", "")
+                  val app = j.optString("app", "")
+                  val sayText = j.optString("say", "")
+                  val sens = j.optBoolean("sensitive", false)
+                  if (act == "done") {
+                      agentEnd(if (sayText.isBlank()) "تمت المهمة" else sayText)
+                      return
+                  }
+                  if (act == "fail") {
+                      agentEnd(if (sayText.isBlank()) "ما قدرت أكمل المهمة" else sayText)
+                      return
+                  }
+                  val label = nodeLabel(idx)
+                  val desc = describeStep(act, idx, text, app, label)
+                  val risky = sens || (act == "click" && isRisky(label))
+                  if (risky) {
+                      confirm("هل أنفذ: " + desc + "؟", desc, { agentEnd("تم الإلغاء") }) { agentExec(act, idx, text, app, desc) }
+                  } else {
+                      agentExec(act, idx, text, app, desc)
+                  }
+              }
+
+              private fun agentExec(act: String, idx: Int, text: String, app: String, desc: String) {
+                  val my = epoch
+                  showPanel("خطوة " + (agentSteps + 1) + ": " + desc, false)
+                  log("وكيل: " + desc)
+                  setState(THINKING)
+                  thread {
+                      var ok = true
+                      val sc = ScreenService.inst
+                      if (sc == null) {
+                          handler.post { agentEnd("خدمة إمكانية الوصول توقفت") }
+                          return@thread
+                      }
+                      try {
+                          when (act) {
+                              "click" -> ok = sc.clickAt(agentNodes, idx)
+                              "type" -> ok = sc.setText(agentNodes, idx, text)
+                              "scroll_down" -> ok = sc.scroll(true)
+                              "scroll_up" -> ok = sc.scroll(false)
+                              "back" -> ok = sc.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+                              "home" -> ok = sc.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
+                              "enter" -> ok = sc.enter()
+                              "open_app" -> handler.post { launchApp(app) }
+                              "wait" -> {}
+                              else -> ok = false
+                          }
+                      } catch (e: Exception) {
+                          ok = false
+                          log("خطأ في التنفيذ: " + e.message)
+                      }
+                      Thread.sleep(if (act == "open_app") 2500L else if (act == "wait") 2000L else 1200L)
+                      handler.post {
+                          if (my != epoch || !agentRunning) return@post
+                          agentSteps++
+                          agentLog.add(agentSteps.toString() + ". " + desc + (if (ok) " ← تم" else " ← فشل"))
+                          if (agentLog.size > 12) agentLog.removeAt(0)
+                          agentNext()
+                      }
+                  }
+              }
+
+              private fun eventsText(startMs: Long, endMs: Long): String? {
+                  if (checkSelfPermission(Manifest.permission.READ_CALENDAR) != PackageManager.PERMISSION_GRANTED) return null
+                  val b = CalendarContract.Instances.CONTENT_URI.buildUpon()
+                  ContentUris.appendId(b, startMs)
+                  ContentUris.appendId(b, endMs)
+                  val tf = java.text.SimpleDateFormat("h:mm a", Locale("ar"))
+                  val sb = StringBuilder()
+                  var n = 0
+                  try {
+                      val c = contentResolver.query(
+                          b.build(),
+                          arrayOf(CalendarContract.Instances.TITLE, CalendarContract.Instances.BEGIN, CalendarContract.Instances.ALL_DAY),
+                          null, null,
+                          CalendarContract.Instances.BEGIN + " ASC"
+                      )
+                      c?.use {
+                          while (it.moveToNext() && n < 8) {
+                              val title = it.getString(0) ?: "بدون عنوان"
+                              val begin = it.getLong(1)
+                              val allDay = it.getInt(2) == 1
+                              sb.append(if (allDay) "طوال اليوم" else tf.format(java.util.Date(begin))).append(": ").append(title).append("\n")
+                              n++
+                          }
+                      }
+                  } catch (e: Exception) {
+                      return null
+                  }
+                  return sb.toString()
+              }
+
+              private fun dayStart(): Long {
+                  val cal = java.util.Calendar.getInstance()
+                  cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
+                  cal.set(java.util.Calendar.MINUTE, 0)
+                  cal.set(java.util.Calendar.SECOND, 0)
+                  cal.set(java.util.Calendar.MILLISECOND, 0)
+                  return cal.timeInMillis
+              }
+
+              private fun calendarRead(t: String) {
+                  if (checkSelfPermission(Manifest.permission.READ_CALENDAR) != PackageManager.PERMISSION_GRANTED) {
+                      say("صلاحية التقويم غير مفعّلة. افتح التطبيق مرة وسمح بها")
+                      return
+                  }
+                  val k = t.trim().lowercase()
+                  var start = dayStart()
+                  var days = 1
+                  if (k == "tomorrow") start += 86400000L else if (k == "week") days = 7
+                  val end = start + days * 86400000L
+                  val label = if (k == "tomorrow") "بكرة" else if (k == "week") "هذا الأسبوع" else "اليوم"
+                  val txt = eventsText(start, end)
+                  if (txt == null) {
+                      say("ما قدرت أقرأ التقويم")
+                  } else if (txt.isBlank()) {
+                      say("ما عندك مواعيد " + label)
+                  } else {
+                      say("مواعيدك " + label + ": " + txt.trim().replace("\n", "، "))
+                  }
+              }
+
+              private fun confirmCalendarAdd(title: String, whenStr: String) {
+                  if (title.isBlank()) { say("ما فهمت عنوان الموعد"); return }
+                  if (checkSelfPermission(Manifest.permission.WRITE_CALENDAR) != PackageManager.PERMISSION_GRANTED) {
+                      say("صلاحية التقويم غير مفعّلة. افتح التطبيق مرة وسمح بها")
+                      return
+                  }
+                  val d = try {
+                      java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).parse(whenStr.trim())
+                  } catch (e: Exception) {
+                      null
+                  }
+                  if (d == null) { say("ما فهمت موعد الحدث"); return }
+                  val shown = java.text.SimpleDateFormat("EEEE d MMMM h:mm a", Locale("ar")).format(d)
+                  confirm("هل أضيف موعد " + title + " يوم " + shown + "؟", title + "\n" + shown) { doCalendarAdd(title, d.time) }
+              }
+
+              private fun doCalendarAdd(title: String, startMs: Long) {
+                  try {
+                      var calId = -1L
+                      val c = contentResolver.query(
+                          CalendarContract.Calendars.CONTENT_URI,
+                          arrayOf(CalendarContract.Calendars._ID),
+                          CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL + ">=? AND " + CalendarContract.Calendars.VISIBLE + "=1",
+                          arrayOf("500"),
+                          null
+                      )
+                      c?.use {
+                          if (it.moveToFirst()) calId = it.getLong(0)
+                      }
+                      if (calId < 0) {
+                          say("ما لقيت تقويم أقدر أضيف فيه")
+                          return
+                      }
+                      val v = ContentValues()
+                      v.put(CalendarContract.Events.CALENDAR_ID, calId)
+                      v.put(CalendarContract.Events.TITLE, title)
+                      v.put(CalendarContract.Events.DTSTART, startMs)
+                      v.put(CalendarContract.Events.DTEND, startMs + 3600000L)
+                      v.put(CalendarContract.Events.EVENT_TIMEZONE, java.util.TimeZone.getDefault().id)
+                      val u = contentResolver.insert(CalendarContract.Events.CONTENT_URI, v)
+                      if (u != null) say("أضفت الموعد") else say("ما قدرت أضيف الموعد")
+                  } catch (e: Exception) {
+                      log("فشل إضافة الموعد: " + e.message)
+                      say("ما قدرت أضيف الموعد")
+                  }
+              }
+
+              private fun morningBrief() {
+                  val now = java.util.Date()
+                  val tf = java.text.SimpleDateFormat("h:mm a", Locale("ar"))
+                  val df = java.text.SimpleDateFormat("EEEE d MMMM yyyy", Locale("ar"))
+                  val sb = StringBuilder()
+                  sb.append("اليوم: ").append(df.format(now)).append("، الساعة ").append(tf.format(now)).append("\n")
+                  sb.append(batteryText()).append("\n")
+                  val start = dayStart()
+                  val ev = eventsText(start, start + 86400000L)
+                  sb.append("مواعيد اليوم: ")
+                  if (ev == null) {
+                      sb.append("غير متاحة")
+                  } else if (ev.isBlank()) {
+                      sb.append("لا توجد")
+                  } else {
+                      sb.append(ev.trim().replace("\n", "، "))
+                  }
+                  sb.append("\n")
+                  val ns = NotifStore.snapshot().take(6)
+                  if (NotifStore.connected && ns.isNotEmpty()) {
+                      sb.append("آخر الإشعارات:\n")
+                      for (x in ns) {
+                          sb.append(x.app).append(": ").append(x.title).append(" ").append(x.text.take(120)).append("\n")
+                      }
+                  }
+                  startWork("لحظة، أجهز لك ملخص اليوم")
+                  askPlain("اصنع ملخصاً صباحياً مختصراً وودوداً بالعربية البسيطة لا يزيد عن خمس جمل من هذه المعلومات، وتجاهل رموز التحقق:\n" + sb.toString(), false) {
+                      say(it)
+                      appendResult(it)
+                  }
+              }
+          }
+          EOF
+      - name: Build
+        run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MyAgent-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
