@@ -20,6 +20,7 @@ jobs:
         run: |
           mkdir -p app/src/main/java/com/myagent/app
           mkdir -p app/src/main/res/xml
+          mkdir -p app/src/main/res/values
           cat > settings.gradle.kts <<'EOF'
           pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
           dependencyResolutionManagement { repositories { google(); mavenCentral() } }
@@ -49,7 +50,7 @@ jobs:
                   minSdk = 26
                   targetSdk = 34
                   versionCode = 1
-                  versionName = "1.6"
+                  versionName = "1.7"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -67,6 +68,23 @@ jobs:
               <root-path name="root" path="."/>
           </paths>
           EOF
+          cat > app/src/main/res/values/strings.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="acc_desc">يسمح للمساعد بقراءة الشاشة والضغط والكتابة بأمرك</string>
+          </resources>
+          EOF
+          cat > app/src/main/res/xml/accessibility_config.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:accessibilityFlags="flagDefault|flagReportViewIds|flagIncludeNotImportantViews"
+              android:canRetrieveWindowContent="true"
+              android:canPerformGestures="true"
+              android:notificationTimeout="100"
+              android:description="@string/acc_desc"/>
+          EOF
           cat > app/src/main/AndroidManifest.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
@@ -77,6 +95,8 @@ jobs:
               <uses-permission android:name="android.permission.CALL_PHONE"/>
               <uses-permission android:name="android.permission.SEND_SMS"/>
               <uses-permission android:name="android.permission.READ_SMS"/>
+              <uses-permission android:name="android.permission.READ_CALENDAR"/>
+              <uses-permission android:name="android.permission.WRITE_CALENDAR"/>
               <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
@@ -111,6 +131,18 @@ jobs:
                       <intent-filter>
                           <action android:name="android.service.notification.NotificationListenerService"/>
                       </intent-filter>
+                  </service>
+                  <service
+                      android:name=".ScreenService"
+                      android:exported="true"
+                      android:label="MyAgent"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService"/>
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_config"/>
                   </service>
                   <provider
                       android:name="androidx.core.content.FileProvider"
@@ -382,6 +414,149 @@ jobs:
               }
           }
           EOF
+          cat > app/src/main/java/com/myagent/app/ScreenService.kt <<'EOF'
+          package com.myagent.app
+
+          import android.accessibilityservice.AccessibilityService
+          import android.accessibilityservice.GestureDescription
+          import android.content.Intent
+          import android.graphics.Path
+          import android.graphics.Rect
+          import android.os.Build
+          import android.os.Bundle
+          import android.view.accessibility.AccessibilityEvent
+          import android.view.accessibility.AccessibilityNodeInfo
+
+          class ScreenInfo(val pkg: String, val text: String, val nodes: List<AccessibilityNodeInfo>)
+
+          class ScreenService : AccessibilityService() {
+              companion object {
+                  @Volatile var inst: ScreenService? = null
+                  private val blocked = listOf(
+                      "bank", "pay", "wallet", "bok", "bankak", "fawry", "finance", "credit",
+                      "packageinstaller", "permissioncontroller", "com.android.settings", "securitycenter"
+                  )
+
+                  fun isBlocked(pkg: String): Boolean {
+                      val p = pkg.lowercase()
+                      return blocked.any { p.contains(it) }
+                  }
+              }
+
+              override fun onServiceConnected() {
+                  inst = this
+                  super.onServiceConnected()
+              }
+
+              override fun onUnbind(intent: Intent?): Boolean {
+                  inst = null
+                  return super.onUnbind(intent)
+              }
+
+              override fun onDestroy() {
+                  inst = null
+                  super.onDestroy()
+              }
+
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+
+              override fun onInterrupt() {}
+
+              fun readScreen(): ScreenInfo? {
+                  val root = rootInActiveWindow ?: return null
+                  val pkg = root.packageName?.toString() ?: ""
+                  if (isBlocked(pkg)) return ScreenInfo(pkg, "BLOCKED", emptyList())
+                  val nodes = ArrayList<AccessibilityNodeInfo>()
+                  val sb = StringBuilder()
+                  walk(root, 0, nodes, sb)
+                  return ScreenInfo(pkg, sb.toString(), nodes)
+              }
+
+              private fun walk(n: AccessibilityNodeInfo?, depth: Int, nodes: ArrayList<AccessibilityNodeInfo>, sb: StringBuilder) {
+                  if (n == null || depth > 30 || nodes.size >= 80) return
+                  if (n.isVisibleToUser) {
+                      val txt = if (n.isPassword) "" else (n.text?.toString() ?: "")
+                      val dsc = n.contentDescription?.toString() ?: ""
+                      val useful = txt.isNotBlank() || dsc.isNotBlank() || n.isClickable || n.isEditable
+                      if (useful) {
+                          val i = nodes.size
+                          nodes.add(n)
+                          val cls = (n.className?.toString() ?: "").substringAfterLast('.')
+                          sb.append("[").append(i).append("] ").append(cls)
+                          if (n.isPassword) sb.append(" (password field - hidden)")
+                          if (txt.isNotBlank()) sb.append(" \"").append(txt.take(80)).append("\"")
+                          if (dsc.isNotBlank() && dsc != txt) sb.append(" desc=\"").append(dsc.take(60)).append("\"")
+                          if (n.isClickable) sb.append(" clickable")
+                          if (n.isEditable) sb.append(" editable")
+                          if (n.isScrollable) sb.append(" scrollable")
+                          if (n.isChecked) sb.append(" checked")
+                          sb.append("\n")
+                      }
+                  }
+                  for (k in 0 until n.childCount) {
+                      walk(n.getChild(k), depth + 1, nodes, sb)
+                  }
+              }
+
+              private fun tap(x: Float, y: Float): Boolean {
+                  val p = Path()
+                  p.moveTo(x, y)
+                  val g = GestureDescription.Builder()
+                      .addStroke(GestureDescription.StrokeDescription(p, 0L, 60L))
+                      .build()
+                  return dispatchGesture(g, null, null)
+              }
+
+              fun clickAt(nodes: List<AccessibilityNodeInfo>, idx: Int): Boolean {
+                  val first = nodes.getOrNull(idx) ?: return false
+                  var n: AccessibilityNodeInfo? = first
+                  var hops = 0
+                  while (n != null && hops < 6) {
+                      if (n.isClickable && n.isEnabled) {
+                          if (n.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+                      }
+                      n = n.parent
+                      hops++
+                  }
+                  val r = Rect()
+                  first.getBoundsInScreen(r)
+                  if (r.width() <= 0 || r.height() <= 0) return false
+                  return tap(r.exactCenterX(), r.exactCenterY())
+              }
+
+              fun setText(nodes: List<AccessibilityNodeInfo>, idx: Int, text: String): Boolean {
+                  val n = nodes.getOrNull(idx) ?: return false
+                  if (n.isPassword) return false
+                  n.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+                  val b = Bundle()
+                  b.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+                  return n.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, b)
+              }
+
+              private fun findScrollable(n: AccessibilityNodeInfo?, d: Int): AccessibilityNodeInfo? {
+                  if (n == null || d > 30) return null
+                  if (n.isScrollable && n.isVisibleToUser) return n
+                  for (i in 0 until n.childCount) {
+                      val r = findScrollable(n.getChild(i), d + 1)
+                      if (r != null) return r
+                  }
+                  return null
+              }
+
+              fun scroll(forward: Boolean): Boolean {
+                  val root = rootInActiveWindow ?: return false
+                  val sc = findScrollable(root, 0) ?: return false
+                  return sc.performAction(if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+              }
+
+              fun enter(): Boolean {
+                  if (Build.VERSION.SDK_INT < 30) return false
+                  val root = rootInActiveWindow ?: return false
+                  val f = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
+                  return f.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
+              }
+          }
+          EOF
           cat > app/src/main/java/com/myagent/app/MainActivity.kt <<'EOF'
           package com.myagent.app
 
@@ -488,6 +663,18 @@ jobs:
                   row2.addView(notifBtn, LinearLayout.LayoutParams(0, -2, 1f))
                   row2.addView(wanderBtn, LinearLayout.LayoutParams(0, -2, 1f))
 
+                  val accBtn = Button(this)
+                  accBtn.text = "♿ تحكم الشاشة (إمكانية الوصول)"
+                  accBtn.textSize = 12f
+                  accBtn.setOnClickListener {
+                      try {
+                          startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                          Bus.post("فعّل MyAgent من الخدمات المثبتة ثم ارجع")
+                      } catch (e: Exception) {
+                          Bus.post("تعذر فتح الإعدادات: " + e.message)
+                      }
+                  }
+
                   status = TextView(this)
                   status.textSize = 16f
                   val scroll = ScrollView(this)
@@ -498,6 +685,7 @@ jobs:
                   root.addView(stopBtn)
                   root.addView(row)
                   root.addView(row2)
+                  root.addView(accBtn)
                   root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
                   setContentView(root)
                   val need = allPerms().filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
@@ -511,6 +699,8 @@ jobs:
                   l.add(Manifest.permission.CALL_PHONE)
                   l.add(Manifest.permission.SEND_SMS)
                   l.add(Manifest.permission.READ_SMS)
+                  l.add(Manifest.permission.READ_CALENDAR)
+                  l.add(Manifest.permission.WRITE_CALENDAR)
                   if (Build.VERSION.SDK_INT >= 33) l.add(Manifest.permission.POST_NOTIFICATIONS)
                   return l
               }
@@ -570,6 +760,7 @@ jobs:
                   try {
                       startForegroundService(Intent(this, AgentService::class.java))
                       Bus.post("تم تشغيل الأفاتار. اضغط زر Home وستجد الروبوت 🤖 فوق الشاشة.")
+                      Bus.post("إمكانية الوصول: " + (if (ScreenService.inst != null) "مفعّلة ✅" else "غير مفعّلة"))
                   } catch (e: Exception) {
                       Bus.post("تعذر تشغيل الخدمة: " + e.message)
                   }
@@ -595,6 +786,7 @@ jobs:
           package com.myagent.app
 
           import android.Manifest
+          import android.accessibilityservice.AccessibilityService
           import android.animation.Animator
           import android.animation.AnimatorListenerAdapter
           import android.animation.ValueAnimator
@@ -604,6 +796,8 @@ jobs:
           import android.app.NotificationManager
           import android.app.RemoteInput
           import android.app.Service
+          import android.content.ContentUris
+          import android.content.ContentValues
           import android.content.Context
           import android.content.Intent
           import android.content.IntentFilter
@@ -627,6 +821,7 @@ jobs:
           import android.os.IBinder
           import android.os.Looper
           import android.provider.AlarmClock
+          import android.provider.CalendarContract
           import android.provider.ContactsContract
           import android.provider.Settings
           import android.speech.RecognitionListener
@@ -640,6 +835,7 @@ jobs:
           import android.view.MotionEvent
           import android.view.View
           import android.view.WindowManager
+          import android.view.accessibility.AccessibilityNodeInfo
           import android.webkit.MimeTypeMap
           import android.widget.Button
           import android.widget.LinearLayout
@@ -732,7 +928,13 @@ jobs:
               private var awaitingConfirm = false
               private var confirmTries = 0
               private var pending: (() -> Unit)? = null
+              private var pendingNo: (() -> Unit)? = null
               private var currentUtt = ""
+              private var agentRunning = false
+              private var agentSteps = 0
+              private var agentTask = ""
+              private val agentLog = ArrayList<String>()
+              private var agentNodes: List<AccessibilityNodeInfo> = emptyList()
               private val history = ArrayList<Pair<String, String>>()
               private val hideRunnable = Runnable { if (!awaitingConfirm) hidePanel() }
 
@@ -745,12 +947,30 @@ jobs:
 
               private val SYS_PLAIN = "أنت مساعد صوتي على تلفون أندرويد. أجب بالعربية البسيطة وباختصار (ثلاث جمل كحد أقصى) من غير تنسيق أو رموز أو روابط."
 
+              private val AGENT_SYS = """أنت وكيل يتحكم في تلفون أندرويد عن طريق قراءة الشاشة. في كل خطوة يصلك: مهمة المستخدم، والخطوات السابقة، ووصف الشاشة الحالية (عناصر مرقمة بين أقواس مربعة). اختر خطوة واحدة فقط وردّ بـ JSON فقط بهذا الشكل: {"act":"click","idx":0,"text":"","app":"","say":"","sensitive":false}
+          القيم الممكنة لـ act:
+          click: اضغط العنصر ذي الرقم idx.
+          type: اكتب text داخل العنصر القابل للكتابة ذي الرقم idx.
+          enter: اضغط زر الإدخال أو البحث في الخانة المركّزة.
+          scroll_down: انزل لتحت. scroll_up: اطلع لفوق.
+          back: رجوع. home: الشاشة الرئيسية.
+          open_app: افتح التطبيق app بالإنجليزية كما يظهر على التلفون.
+          wait: انتظر قليلاً حتى تتحمل الشاشة.
+          done: المهمة اكتملت، ضع في say جملة قصيرة بالعربية تلخص ما تم.
+          fail: تعذرت المهمة، ضع السبب في say بالعربية.
+          قواعد:
+          اجعل sensitive=true إذا كانت الخطوة نهائية ولا يمكن التراجع عنها مثل إرسال رسالة أو دفع أو شراء أو حذف أو نشر أو تأكيد طلب أو إجراء مكالمة.
+          لا تكتب أبداً في خانات كلمات السر، ولا تتجاوز شاشات تسجيل الدخول أو الدفع أو رموز التحقق، وإذا ظهرت فاستخدم fail.
+          لا تكرر نفس الخطوة الفاشلة أكثر من مرة، وإن لم تتقدم المهمة فاستخدم fail.
+          إذا لم تكن في التطبيق المطلوب فابدأ بـ open_app.
+          استخدم أرقام العناصر كما في وصف الشاشة الحالي فقط."""
+
               private val SYS = """أنت مساعد صوتي على تلفون أندرويد. المحادثة صوتية ومستمرة، فاجعل ردودك قصيرة جداً. رد دائماً بـ JSON فقط بهذا الشكل: {"action":"chat","target":"","message":"","reply":""}
           القيم الممكنة لـ action:
           chat: محادثة أو سؤال عادي أو سؤال عن شيء ناقص. ضع الجواب في reply بالعربية البسيطة وباختصار.
           open_app: فتح تطبيق. target اسم التطبيق بالإنجليزية كما يظهر على التلفون مثل WhatsApp أو YouTube أو Chrome.
           call: اتصال. target اسم الشخص كما قاله المستخدم أو الرقم.
-          send_sms: رسالة نصية. target اسم الشخص أو الرقم، و message نص الرسالة فقط.
+          send_sms: رسالة نصية SMS عادية. target اسم الشخص أو الرقم، و message نص الرسالة فقط.
           read_sms: قراءة الرسائل الواردة وتلخيصها. target اسم الشخص أو الرقم إن طلب رسائل شخص محدد وإلا اتركه فارغاً. message عدد الرسائل كرقم إن ذكره.
           open_url: فتح موقع أو البحث في جوجل. target الرابط الكامل أو كلمات البحث.
           download: تحميل ملف. target رابط الملف المباشر.
@@ -767,11 +987,18 @@ jobs:
           recent_files: آخر الملفات المحمّلة.
           read_notifications: قراءة الإشعارات وتلخيصها. target اسم التطبيق بالإنجليزية أو اسم الشخص إن حدده وإلا فارغ. message عدد الإشعارات إن ذكره.
           reply_notification: الرد على إشعار مثل رسالة واتساب بالرد السريع. target اسم التطبيق بالإنجليزية أو اسم المرسل، و message نص الرد.
+          read_screen: قراءة وشرح ما في الشاشة الحالية.
+          screen_cmd: أمر تنقل بسيط على الشاشة. target واحد من: back أو home أو recents أو scroll_down أو scroll_up.
+          agent: مهمة تحتاج تحكماً في تطبيقات التلفون على عدة خطوات مثل إرسال رسالة واتساب جديدة أو البحث داخل تطبيق. target وصف المهمة كاملاً بالتفصيل.
+          calendar_today: السؤال عن المواعيد. target واحدة من: today أو tomorrow أو week.
+          calendar_add: إضافة موعد في التقويم. target عنوان الموعد، و message وقت البداية بصيغة yyyy-MM-dd HH:mm اعتماداً على الوقت الآن المذكور أدناه.
+          morning: ملخص الصباح أو الملخص اليومي، عندما يقول المستخدم صباح الخير أو ملخص يومي.
           remember: حفظ معلومة طلب المستخدم أن تتذكرها. message نص المعلومة بصيغة واضحة مثل: رقم أنس الملك 0912345678.
           forget: نسيان معلومة محفوظة. target كلمة مفتاحية موجودة في المعلومة.
           end: عندما يريد المستخدم إنهاء المحادثة مثل خلاص أو شكراً أو سلام أو كفاية.
           قواعد:
-          لا تطلب تأكيداً بنفسك، فالتطبيق يسأل المستخدم عن التأكيد قبل الاتصال والإرسال والتحميل والرد على الإشعارات.
+          لا تطلب تأكيداً بنفسك، فالتطبيق يسأل المستخدم عن التأكيد قبل الاتصال والإرسال والتحميل والرد على الإشعارات وإضافة المواعيد وبدء المهام.
+          للرسائل عبر واتساب أو التطبيقات الأخرى استخدم agent أو reply_notification، وللرسائل النصية العادية استخدم send_sms.
           لا تحفظ كلمات السر ولا أرقام البطاقات ولا معلومات بنكية. ارفض ذلك بلطف بإجراء chat.
           إذا كانت المعلومات المحفوظة تحتوي على رقم الشخص المطلوب فضع الرقم في target عند الاتصال أو الرسالة.
           إذا ناقص شيء لتنفيذ الأمر مثل اسم الشخص أو نص الرسالة فاسأل عنه بإجراء chat، وستصلك إجابة المستخدم في الرسالة التالية.
@@ -803,6 +1030,7 @@ jobs:
 
               override fun onDestroy() {
                   Bus.running = false
+                  agentRunning = false
                   handler.removeCallbacksAndMessages(null)
                   try { wanderAnim?.cancel() } catch (e: Exception) {}
                   try { recognizer?.destroy() } catch (e: Exception) {}
@@ -1030,8 +1258,10 @@ jobs:
                   epoch++
                   convo = false
                   waiting = false
+                  agentRunning = false
                   awaitingConfirm = false
                   pending = null
+                  pendingNo = null
                   currentUtt = ""
                   try { recognizer?.cancel() } catch (e: Exception) {}
                   tts?.stop()
@@ -1148,8 +1378,9 @@ jobs:
                   ask(t)
               }
 
-              private fun confirm(question: String, detail: String, action: () -> Unit) {
+              private fun confirm(question: String, detail: String, onNo: (() -> Unit)? = null, action: () -> Unit) {
                   pending = action
+                  pendingNo = onNo
                   awaitingConfirm = true
                   confirmTries = 0
                   showPanel(question + "\n" + detail, true)
@@ -1178,7 +1409,9 @@ jobs:
 
               private fun resolveConfirm(yes: Boolean) {
                   val p = pending
+                  val n = pendingNo
                   pending = null
+                  pendingNo = null
                   awaitingConfirm = false
                   confirmTries = 0
                   currentUtt = ""
@@ -1186,7 +1419,7 @@ jobs:
                   tts?.stop()
                   hidePanel()
                   setState(IDLE)
-                  if (yes && p != null) p() else say("تم الإلغاء")
+                  if (yes && p != null) p() else if (n != null) n() else say("تم الإلغاء")
               }
 
               private fun getMem(): List<String> =
@@ -1321,7 +1554,9 @@ jobs:
                   }
                   val my = epoch
                   val mem = getMem()
-                  val sysText = if (mem.isEmpty()) SYS else SYS + "\n\nمعلومات محفوظة عن المستخدم:\n" + mem.joinToString("\n")
+                  val nowStr = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm EEEE", Locale.US).format(java.util.Date())
+                  var sysText = SYS + "\n\nالوقت الآن: " + nowStr
+                  if (mem.isNotEmpty()) sysText = sysText + "\n\nمعلومات محفوظة عن المستخدم:\n" + mem.joinToString("\n")
                   val contents = JSONArray()
                   for (h in history) contents.put(textPart(h.first, h.second))
                   contents.put(textPart("user", q))
@@ -1386,13 +1621,19 @@ jobs:
                       "timer" -> setTimer(target, msg)
                       "flashlight" -> flashlight(target)
                       "volume" -> volume(target)
-                      "battery" -> battery()
+                      "battery" -> say(batteryText())
                       "time" -> timeInfo(target)
                       "settings" -> { convo = false; openSettings(target) }
                       "find_file" -> findFile(target, msg)
                       "recent_files" -> recentFiles()
                       "read_notifications" -> readNotifs(target, msg)
                       "reply_notification" -> confirmReplyNotif(target, msg)
+                      "read_screen" -> readScreenCmd()
+                      "screen_cmd" -> screenCmd(target)
+                      "agent" -> agentStart(if (target.isBlank()) msg else target)
+                      "calendar_today" -> calendarRead(target)
+                      "calendar_add" -> confirmCalendarAdd(target, msg)
+                      "morning" -> morningBrief()
                       "remember" -> remember(if (msg.isBlank()) target else msg, reply)
                       "forget" -> forget(target)
                       "end" -> { convo = false; say(if (reply.isBlank()) "في أمان الله" else reply) }
@@ -1405,21 +1646,29 @@ jobs:
                   startActivity(i)
               }
 
-              private fun openApp(name: String) {
+              private fun launchApp(name: String): String? {
                   val pm = packageManager
                   val i = Intent(Intent.ACTION_MAIN)
                   i.addCategory(Intent.CATEGORY_LAUNCHER)
                   val apps = pm.queryIntentActivities(i, 0)
                   val q = name.trim().lowercase()
+                  if (q.isBlank()) return null
                   val hit = apps.firstOrNull { it.loadLabel(pm).toString().lowercase() == q }
                       ?: apps.firstOrNull { it.loadLabel(pm).toString().lowercase().contains(q) }
-                  val li = if (hit != null) pm.getLaunchIntentForPackage(hit.activityInfo.packageName) else null
-                  if (li == null || q.isBlank()) {
-                      say("ما لقيت تطبيق باسم " + name)
-                      return
+                      ?: return null
+                  val li = pm.getLaunchIntentForPackage(hit.activityInfo.packageName) ?: return null
+                  return try {
+                      launch(li)
+                      hit.loadLabel(pm).toString()
+                  } catch (e: Exception) {
+                      log("تعذر فتح التطبيق: " + e.message)
+                      null
                   }
-                  say("أفتح " + hit!!.loadLabel(pm))
-                  try { launch(li) } catch (e: Exception) { log("تعذر فتح التطبيق: " + e.message) }
+              }
+
+              private fun openApp(name: String) {
+                  val label = launchApp(name)
+                  if (label == null) say("ما لقيت تطبيق باسم " + name) else say("أفتح " + label)
               }
 
               private fun normalizeDigits(s: String): String {
@@ -1588,358 +1837,4 @@ jobs:
                           c.instanceFollowRedirects = true
                           val html = c.inputStream.bufferedReader().use { it.readText() }.take(600000)
                           val text = html.replace(Regex("(?is)<(script|style|noscript)[^>]*>.*?</\\1>"), " ")
-                              .replace(Regex("(?s)<[^>]+>"), " ")
-                              .replace(Regex("&[a-z#0-9]+;"), " ")
-                              .replace(Regex("\\s+"), " ")
-                              .trim().take(12000)
-                          if (my != epoch) return@thread
-                          if (text.length < 200) {
-                              log("ما قدرت أقرأ محتوى الصفحة")
-                              handler.post { waiting = false; convo = false; setState(IDLE); say("ما قدرت أقرأ الصفحة") }
-                              return@thread
-                          }
-                          val prompt = (if (ask.isBlank()) "لخص هذه الصفحة" else ask) + ":\n" + text
-                          handler.post { askPlain(prompt, false) { say(it); appendResult(it) } }
-                      } catch (e: Exception) {
-                          log("فشل فتح الصفحة: " + e.message)
-                          handler.post { waiting = false; convo = false; setState(IDLE); say("ما قدرت أفتح الصفحة") }
-                      }
-                  }
-              }
-
-              private fun research(q: String) {
-                  if (q.isBlank()) { say("ما فهمت السؤال"); return }
-                  startWork("أبحث لك")
-                  askPlain(q, true) { say(it); appendResult(it) }
-              }
-
-              private fun setAlarm(t: String, label: String) {
-                  val parts = normalizeDigits(t).trim().split(":")
-                  val h = parts.getOrNull(0)?.trim()?.toIntOrNull()
-                  val m = parts.getOrNull(1)?.trim()?.toIntOrNull() ?: 0
-                  if (h == null || h !in 0..23 || m !in 0..59) { say("ما فهمت الوقت"); return }
-                  val i = Intent(AlarmClock.ACTION_SET_ALARM)
-                  i.putExtra(AlarmClock.EXTRA_HOUR, h)
-                  i.putExtra(AlarmClock.EXTRA_MINUTES, m)
-                  i.putExtra(AlarmClock.EXTRA_MESSAGE, if (label.isBlank()) "منبه" else label)
-                  i.putExtra(AlarmClock.EXTRA_SKIP_UI, true)
-                  try {
-                      launch(i)
-                      say("ضبطت المنبه على " + h + ":" + (if (m < 10) "0" else "") + m)
-                  } catch (e: Exception) {
-                      log("تعذر ضبط المنبه: " + e.message)
-                      say("ما قدرت أضبط المنبه")
-                  }
-              }
-
-              private fun setTimer(t: String, label: String) {
-                  val secs = normalizeDigits(t).filter { it.isDigit() }.toIntOrNull()
-                  if (secs == null || secs <= 0) { say("ما فهمت مدة المؤقت"); return }
-                  val i = Intent(AlarmClock.ACTION_SET_TIMER)
-                  i.putExtra(AlarmClock.EXTRA_LENGTH, secs)
-                  i.putExtra(AlarmClock.EXTRA_MESSAGE, if (label.isBlank()) "مؤقت" else label)
-                  i.putExtra(AlarmClock.EXTRA_SKIP_UI, true)
-                  try {
-                      launch(i)
-                      if (secs >= 60) say("ضبطت مؤقت " + (secs / 60) + " دقيقة") else say("ضبطت مؤقت " + secs + " ثانية")
-                  } catch (e: Exception) {
-                      log("تعذر ضبط المؤقت: " + e.message)
-                      say("ما قدرت أضبط المؤقت")
-                  }
-              }
-
-              private fun flashlight(t: String) {
-                  try {
-                      val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
-                      val id = cm.cameraIdList.firstOrNull { cm.getCameraCharacteristics(it).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true }
-                      if (id == null) { say("ما لقيت فلاش في التلفون"); return }
-                      val on = t.trim().lowercase() != "off"
-                      cm.setTorchMode(id, on)
-                      say(if (on) "شغلت الفلاش" else "طفيت الفلاش")
-                  } catch (e: Exception) {
-                      log("تعذر تشغيل الفلاش: " + e.message)
-                      say("ما قدرت أشغل الفلاش")
-                  }
-              }
-
-              private fun volume(t: String) {
-                  val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                  val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                  val s = t.trim().lowercase()
-                  val digits = normalizeDigits(s).filter { it.isDigit() }
-                  try {
-                      if (s == "up") {
-                          am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, 0)
-                          am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, AudioManager.FLAG_SHOW_UI)
-                      } else if (s == "down") {
-                          am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, 0)
-                          am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI)
-                      } else if (s == "max") {
-                          am.setStreamVolume(AudioManager.STREAM_MUSIC, max, AudioManager.FLAG_SHOW_UI)
-                      } else if (s == "mute") {
-                          am.setStreamVolume(AudioManager.STREAM_MUSIC, 0, AudioManager.FLAG_SHOW_UI)
-                      } else if (digits.isNotEmpty()) {
-                          val p = digits.toInt().coerceIn(0, 100)
-                          am.setStreamVolume(AudioManager.STREAM_MUSIC, max * p / 100, AudioManager.FLAG_SHOW_UI)
-                      } else {
-                          say("ما فهمت مستوى الصوت")
-                          return
-                      }
-                      say("تم")
-                  } catch (e: Exception) {
-                      log("تعذر تغيير الصوت: " + e.message)
-                      say("ما قدرت أغيّر الصوت")
-                  }
-              }
-
-              private fun battery() {
-                  val i = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-                  val lvl = i?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
-                  val sc = i?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
-                  val st = i?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
-                  val charging = st == BatteryManager.BATTERY_STATUS_CHARGING || st == BatteryManager.BATTERY_STATUS_FULL
-                  if (lvl < 0 || sc <= 0) {
-                      say("ما قدرت أعرف مستوى البطارية")
-                  } else {
-                      say("البطارية " + (lvl * 100 / sc) + " بالمية" + (if (charging) " وتشحن" else ""))
-                  }
-              }
-
-              private fun timeInfo(t: String) {
-                  val now = java.util.Date()
-                  val tf = java.text.SimpleDateFormat("h:mm a", Locale("ar"))
-                  val df = java.text.SimpleDateFormat("EEEE d MMMM yyyy", Locale("ar"))
-                  val k = t.trim().lowercase()
-                  if (k == "date") {
-                      say("اليوم " + df.format(now))
-                  } else if (k == "both") {
-                      say("اليوم " + df.format(now) + "، والساعة " + tf.format(now))
-                  } else {
-                      say("الساعة الآن " + tf.format(now))
-                  }
-              }
-
-              private fun openSettings(t: String) {
-                  val act = when (t.trim().lowercase()) {
-                      "wifi" -> Settings.ACTION_WIFI_SETTINGS
-                      "bluetooth" -> Settings.ACTION_BLUETOOTH_SETTINGS
-                      "location" -> Settings.ACTION_LOCATION_SOURCE_SETTINGS
-                      "display" -> Settings.ACTION_DISPLAY_SETTINGS
-                      "sound" -> Settings.ACTION_SOUND_SETTINGS
-                      "battery" -> Settings.ACTION_BATTERY_SAVER_SETTINGS
-                      else -> Settings.ACTION_SETTINGS
-                  }
-                  say("أفتح الإعدادات")
-                  try {
-                      launch(Intent(act))
-                  } catch (e: Exception) {
-                      log("تعذر فتح الإعدادات: " + e.message)
-                  }
-              }
-
-              private fun fileAccess(): Boolean {
-                  return if (Build.VERSION.SDK_INT >= 30) {
-                      Environment.isExternalStorageManager()
-                  } else {
-                      checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
-                  }
-              }
-
-              @Suppress("DEPRECATION")
-              private fun searchFiles(q: String): List<File> {
-                  val tokens = normalizeDigits(q).lowercase().split(" ", "_", "-", ".").filter { it.isNotBlank() }
-                  if (tokens.isEmpty()) return emptyList()
-                  val roots = listOf(
-                      Environment.DIRECTORY_DOWNLOADS,
-                      Environment.DIRECTORY_DOCUMENTS,
-                      Environment.DIRECTORY_PICTURES,
-                      Environment.DIRECTORY_DCIM
-                  ).map { Environment.getExternalStoragePublicDirectory(it) }
-                  val all = ArrayList<File>()
-                  for (r in roots) {
-                      if (!r.exists()) continue
-                      r.walkTopDown().maxDepth(3).filter { it.isFile }.forEach { all.add(it) }
-                  }
-                  val strict = all.filter { f ->
-                      val n = f.name.lowercase()
-                      tokens.all { n.contains(it) }
-                  }
-                  val res = if (strict.isNotEmpty()) strict else all.filter { f ->
-                      val n = f.name.lowercase()
-                      tokens.any { n.contains(it) }
-                  }
-                  return res.sortedByDescending { it.lastModified() }.take(5)
-              }
-
-              private fun findFile(q: String, mode: String) {
-                  if (!fileAccess()) {
-                      say("صلاحية الملفات غير مفعّلة. افتح التطبيق واضغط زر الملفات")
-                      return
-                  }
-                  if (q.isBlank()) { say("ما فهمت اسم الملف"); return }
-                  val my = epoch
-                  startWork("أدور على الملف")
-                  thread {
-                      val res = try {
-                          searchFiles(q)
-                      } catch (e: Exception) {
-                          log("فشل البحث: " + e.message)
-                          emptyList<File>()
-                      }
-                      handler.post {
-                          if (my != epoch) return@post
-                          waiting = false
-                          if (res.isEmpty()) {
-                              say("ما لقيت ملف باسم " + q)
-                              return@post
-                          }
-                          val f = res[0]
-                          if (mode.trim().lowercase() == "summarize") {
-                              summarizeFile(f)
-                          } else {
-                              convo = false
-                              say("لقيت " + f.name + "، أفتحه")
-                              openFile(f)
-                          }
-                      }
-                  }
-              }
-
-              private fun openFile(f: File) {
-                  try {
-                      val uri = FileProvider.getUriForFile(this, "com.myagent.app.files", f)
-                      val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(f.extension.lowercase()) ?: "*/*"
-                      val i = Intent(Intent.ACTION_VIEW)
-                      i.setDataAndType(uri, mime)
-                      i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                      launch(i)
-                  } catch (e: Exception) {
-                      log("تعذر فتح الملف: " + e.message)
-                      say("ما قدرت أفتح الملف")
-                  }
-              }
-
-              private fun docxText(f: File): String {
-                  java.util.zip.ZipFile(f).use { z ->
-                      val e = z.getEntry("word/document.xml") ?: return ""
-                      val xml = z.getInputStream(e).bufferedReader().use { it.readText() }
-                      return xml.replace("</w:p>", "\n").replace(Regex("<[^>]+>"), "").take(12000)
-                  }
-              }
-
-              private fun summarizeFile(f: File) {
-                  val ext = f.extension.lowercase()
-                  val my = epoch
-                  startWork("أقرأ " + f.name)
-                  thread {
-                      try {
-                          val contents = JSONArray()
-                          val prompt = "لخص هذا الملف (" + f.name + ") بالعربية البسيطة وباختصار."
-                          val textExt = setOf("txt", "md", "csv", "json", "log", "xml", "html", "htm", "srt")
-                          val mediaExt = setOf("pdf", "png", "jpg", "jpeg", "webp")
-                          if (textExt.contains(ext)) {
-                              val t = f.readText().take(12000)
-                              contents.put(textPart("user", prompt + "\n\n" + t))
-                          } else if (ext == "docx") {
-                              val t = docxText(f)
-                              if (t.length < 20) throw Exception("الملف فارغ")
-                              contents.put(textPart("user", prompt + "\n\n" + t))
-                          } else if (mediaExt.contains(ext)) {
-                              if (f.length() > 15L * 1024 * 1024) throw Exception("الملف كبير")
-                              val mime = if (ext == "pdf") "application/pdf" else if (ext == "png") "image/png" else if (ext == "webp") "image/webp" else "image/jpeg"
-                              val b64 = Base64.encodeToString(f.readBytes(), Base64.NO_WRAP)
-                              val parts = JSONArray()
-                                  .put(JSONObject().put("text", prompt))
-                                  .put(JSONObject().put("inline_data", JSONObject().put("mime_type", mime).put("data", b64)))
-                              contents.put(JSONObject().put("role", "user").put("parts", parts))
-                          } else {
-                              throw Exception("نوع الملف غير مدعوم: " + ext)
-                          }
-                          handler.post {
-                              if (my == epoch) askPlainContents(contents) { say(it); appendResult(it) }
-                          }
-                      } catch (e: Exception) {
-                          log("فشل قراءة الملف: " + e.message)
-                          handler.post { waiting = false; convo = false; setState(IDLE); say("ما قدرت ألخص الملف") }
-                      }
-                  }
-              }
-
-              @Suppress("DEPRECATION")
-              private fun recentFiles() {
-                  if (!fileAccess()) {
-                      say("صلاحية الملفات غير مفعّلة. افتح التطبيق واضغط زر الملفات")
-                      return
-                  }
-                  val d = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                  val l = d.listFiles()?.filter { it.isFile }?.sortedByDescending { it.lastModified() }?.take(5) ?: emptyList()
-                  if (l.isEmpty()) {
-                      say("ما في ملفات في التنزيلات")
-                  } else {
-                      say("آخر الملفات: " + l.joinToString("، ") { it.name.take(50) })
-                  }
-              }
-
-              private fun readNotifs(target: String, count: String) {
-                  if (!NotifStore.connected) {
-                      say("فعّل صلاحية الإشعارات من التطبيق أولاً")
-                      return
-                  }
-                  val n = (normalizeDigits(count).filter { it.isDigit() }.toIntOrNull() ?: 8).coerceIn(1, 15)
-                  val t = target.trim().lowercase()
-                  val list = NotifStore.snapshot()
-                      .filter { t.isBlank() || it.app.lowercase().contains(t) || it.title.lowercase().contains(t) }
-                      .take(n)
-                  if (list.isEmpty()) {
-                      say("ما في إشعارات")
-                      return
-                  }
-                  val sb = StringBuilder()
-                  for (x in list) {
-                      sb.append(x.app).append(" - ").append(x.title).append(": ").append(x.text.take(300)).append("\n")
-                  }
-                  startWork("لحظة، ألخص إشعاراتك")
-                  askPlain("لخص هذه الإشعارات بالعربية البسيطة وباختصار وركز على المهم منها. لا تذكر رموز التحقق:\n" + sb.toString(), false) {
-                      say(it)
-                      appendResult(it)
-                  }
-              }
-
-              private fun confirmReplyNotif(target: String, text: String) {
-                  if (text.isBlank()) { say("ما فهمت نص الرد"); return }
-                  if (!NotifStore.connected) {
-                      say("فعّل صلاحية الإشعارات من التطبيق أولاً")
-                      return
-                  }
-                  val t = target.trim().lowercase()
-                  val item = NotifStore.snapshot().firstOrNull {
-                      it.reply != null && (t.isBlank() || it.app.lowercase().contains(t) || it.title.lowercase().contains(t))
-                  }
-                  if (item == null) { say("ما لقيت إشعار أقدر أرد عليه"); return }
-                  confirm("هل أرد على " + item.title + " في " + item.app + " بـ: " + text + "؟", text) { doReplyNotif(item, text) }
-              }
-
-              private fun doReplyNotif(item: NItem, text: String) {
-                  val ra = item.reply
-                  if (ra == null) { say("ما أقدر أرد على هذا الإشعار"); return }
-                  try {
-                      val ri = ra.remoteInputs
-                      val intent = Intent()
-                      val b = Bundle()
-                      for (r in ri) b.putCharSequence(r.resultKey, text)
-                      RemoteInput.addResultsToIntent(ri, intent, b)
-                      ra.actionIntent.send(this, 0, intent)
-                      say("تم الرد")
-                  } catch (e: Exception) {
-                      log("فشل الرد: " + e.message)
-                      say("ما قدرت أرد، ممكن الإشعار انتهى")
-                  }
-              }
-          }
-          EOF
-      - name: Build
-        run: gradle assembleDebug --no-daemon
-      - uses: actions/upload-artifact@v4
-        with:
-          name: MyAgent-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+                              .replace(Regex("(?s)
