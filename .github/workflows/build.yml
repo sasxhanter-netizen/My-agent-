@@ -1837,4 +1837,191 @@ jobs:
                           c.instanceFollowRedirects = true
                           val html = c.inputStream.bufferedReader().use { it.readText() }.take(600000)
                           val text = html.replace(Regex("(?is)<(script|style|noscript)[^>]*>.*?</\\1>"), " ")
-                              .replace(Regex("(?s)
+                              .replace(Regex("(?s)<[^>]+>"), " ")
+                              .replace(Regex("&[a-z#0-9]+;"), " ")
+                              .replace(Regex("\\s+"), " ")
+                              .trim().take(12000)
+                          if (my != epoch) return@thread
+                          if (text.length < 200) {
+                              log("ما قدرت أقرأ محتوى الصفحة")
+                              handler.post { waiting = false; convo = false; setState(IDLE); say("ما قدرت أقرأ الصفحة") }
+                              return@thread
+                          }
+                          val prompt = (if (ask.isBlank()) "لخص هذه الصفحة" else ask) + ":\n" + text
+                          handler.post { askPlain(prompt, false) { say(it); appendResult(it) } }
+                      } catch (e: Exception) {
+                          log("فشل فتح الصفحة: " + e.message)
+                          handler.post { waiting = false; convo = false; setState(IDLE); say("ما قدرت أفتح الصفحة") }
+                      }
+                  }
+              }
+
+              private fun research(q: String) {
+                  if (q.isBlank()) { say("ما فهمت السؤال"); return }
+                  startWork("أبحث لك")
+                  askPlain(q, true) { say(it); appendResult(it) }
+              }
+
+              private fun setAlarm(t: String, label: String) {
+                  val parts = normalizeDigits(t).trim().split(":")
+                  val h = parts.getOrNull(0)?.trim()?.toIntOrNull()
+                  val m = parts.getOrNull(1)?.trim()?.toIntOrNull() ?: 0
+                  if (h == null || h !in 0..23 || m !in 0..59) { say("ما فهمت الوقت"); return }
+                  val i = Intent(AlarmClock.ACTION_SET_ALARM)
+                  i.putExtra(AlarmClock.EXTRA_HOUR, h)
+                  i.putExtra(AlarmClock.EXTRA_MINUTES, m)
+                  i.putExtra(AlarmClock.EXTRA_MESSAGE, if (label.isBlank()) "منبه" else label)
+                  i.putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                  try {
+                      launch(i)
+                      say("ضبطت المنبه على " + h + ":" + (if (m < 10) "0" else "") + m)
+                  } catch (e: Exception) {
+                      log("تعذر ضبط المنبه: " + e.message)
+                      say("ما قدرت أضبط المنبه")
+                  }
+              }
+
+              private fun setTimer(t: String, label: String) {
+                  val secs = normalizeDigits(t).filter { it.isDigit() }.toIntOrNull()
+                  if (secs == null || secs <= 0) { say("ما فهمت مدة المؤقت"); return }
+                  val i = Intent(AlarmClock.ACTION_SET_TIMER)
+                  i.putExtra(AlarmClock.EXTRA_LENGTH, secs)
+                  i.putExtra(AlarmClock.EXTRA_MESSAGE, if (label.isBlank()) "مؤقت" else label)
+                  i.putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                  try {
+                      launch(i)
+                      if (secs >= 60) say("ضبطت مؤقت " + (secs / 60) + " دقيقة") else say("ضبطت مؤقت " + secs + " ثانية")
+                  } catch (e: Exception) {
+                      log("تعذر ضبط المؤقت: " + e.message)
+                      say("ما قدرت أضبط المؤقت")
+                  }
+              }
+
+              private fun flashlight(t: String) {
+                  try {
+                      val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                      val id = cm.cameraIdList.firstOrNull { cm.getCameraCharacteristics(it).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true }
+                      if (id == null) { say("ما لقيت فلاش في التلفون"); return }
+                      val on = t.trim().lowercase() != "off"
+                      cm.setTorchMode(id, on)
+                      say(if (on) "شغلت الفلاش" else "طفيت الفلاش")
+                  } catch (e: Exception) {
+                      log("تعذر تشغيل الفلاش: " + e.message)
+                      say("ما قدرت أشغل الفلاش")
+                  }
+              }
+
+              private fun volume(t: String) {
+                  val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                  val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                  val s = t.trim().lowercase()
+                  val digits = normalizeDigits(s).filter { it.isDigit() }
+                  try {
+                      if (s == "up") {
+                          am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, 0)
+                          am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, AudioManager.FLAG_SHOW_UI)
+                      } else if (s == "down") {
+                          am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, 0)
+                          am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI)
+                      } else if (s == "max") {
+                          am.setStreamVolume(AudioManager.STREAM_MUSIC, max, AudioManager.FLAG_SHOW_UI)
+                      } else if (s == "mute") {
+                          am.setStreamVolume(AudioManager.STREAM_MUSIC, 0, AudioManager.FLAG_SHOW_UI)
+                      } else if (digits.isNotEmpty()) {
+                          val p = digits.toInt().coerceIn(0, 100)
+                          am.setStreamVolume(AudioManager.STREAM_MUSIC, max * p / 100, AudioManager.FLAG_SHOW_UI)
+                      } else {
+                          say("ما فهمت مستوى الصوت")
+                          return
+                      }
+                      say("تم")
+                  } catch (e: Exception) {
+                      log("تعذر تغيير الصوت: " + e.message)
+                      say("ما قدرت أغيّر الصوت")
+                  }
+              }
+
+              private fun batteryText(): String {
+                  val i = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                  val lvl = i?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+                  val sc = i?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
+                  val st = i?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+                  val charging = st == BatteryManager.BATTERY_STATUS_CHARGING || st == BatteryManager.BATTERY_STATUS_FULL
+                  if (lvl < 0 || sc <= 0) return "ما قدرت أعرف مستوى البطارية"
+                  return "البطارية " + (lvl * 100 / sc) + " بالمية" + (if (charging) " وتشحن" else "")
+              }
+
+              private fun timeInfo(t: String) {
+                  val now = java.util.Date()
+                  val tf = java.text.SimpleDateFormat("h:mm a", Locale("ar"))
+                  val df = java.text.SimpleDateFormat("EEEE d MMMM yyyy", Locale("ar"))
+                  val k = t.trim().lowercase()
+                  if (k == "date") {
+                      say("اليوم " + df.format(now))
+                  } else if (k == "both") {
+                      say("اليوم " + df.format(now) + "، والساعة " + tf.format(now))
+                  } else {
+                      say("الساعة الآن " + tf.format(now))
+                  }
+              }
+
+              private fun openSettings(t: String) {
+                  val act = when (t.trim().lowercase()) {
+                      "wifi" -> Settings.ACTION_WIFI_SETTINGS
+                      "bluetooth" -> Settings.ACTION_BLUETOOTH_SETTINGS
+                      "location" -> Settings.ACTION_LOCATION_SOURCE_SETTINGS
+                      "display" -> Settings.ACTION_DISPLAY_SETTINGS
+                      "sound" -> Settings.ACTION_SOUND_SETTINGS
+                      "battery" -> Settings.ACTION_BATTERY_SAVER_SETTINGS
+                      else -> Settings.ACTION_SETTINGS
+                  }
+                  say("أفتح الإعدادات")
+                  try {
+                      launch(Intent(act))
+                  } catch (e: Exception) {
+                      log("تعذر فتح الإعدادات: " + e.message)
+                  }
+              }
+
+              private fun fileAccess(): Boolean {
+                  return if (Build.VERSION.SDK_INT >= 30) {
+                      Environment.isExternalStorageManager()
+                  } else {
+                      checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+                  }
+              }
+
+              @Suppress("DEPRECATION")
+              private fun searchFiles(q: String): List<File> {
+                  val tokens = normalizeDigits(q).lowercase().split(" ", "_", "-", ".").filter { it.isNotBlank() }
+                  if (tokens.isEmpty()) return emptyList()
+                  val roots = listOf(
+                      Environment.DIRECTORY_DOWNLOADS,
+                      Environment.DIRECTORY_DOCUMENTS,
+                      Environment.DIRECTORY_PICTURES,
+                      Environment.DIRECTORY_DCIM
+                  ).map { Environment.getExternalStoragePublicDirectory(it) }
+                  val all = ArrayList<File>()
+                  for (r in roots) {
+                      if (!r.exists()) continue
+                      r.walkTopDown().maxDepth(3).filter { it.isFile }.forEach { all.add(it) }
+                  }
+                  val strict = all.filter { f ->
+                      val n = f.name.lowercase()
+                      tokens.all { n.contains(it) }
+                  }
+                  val res = if (strict.isNotEmpty()) strict else all.filter { f ->
+                      val n = f.name.lowercase()
+                      tokens.any { n.contains(it) }
+                  }
+                  return res.sortedByDescending { it.lastModified() }.take(5)
+              }
+
+              private fun findFile(q: String, mode: String) {
+                  if (!fileAccess()) {
+                      say("صلاحية الملفات غير مفعّلة. افتح التطبيق واضغط زر الملفات")
+                      return
+                  }
+                  if (q.isBlank()) { say("ما فهمت اسم الملف"); return }
+                  val my = epoch
+                  startWork
