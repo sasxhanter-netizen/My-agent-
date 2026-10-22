@@ -152,22 +152,11 @@ fun AgentScreen(activity: Activity) {
                     AndroidView(
                         factory = { ctx ->
                             SceneView(
-                                context = ctx,
-                                engine = io.github.sceneview.node.Engine.create(),
-                                childNodes = mutableListOf(
-                                    io.github.sceneview.node.ModelNode(
-                                        context = ctx,
-                                        glbAsset = "robot.glb",
-                                        scaleToUnits = 1.0f
-                                    ).apply {
-                                        // تحريك الموديل بشكل دائري بطيء
-                                        val rotationAnimator = android.animation.ObjectAnimator.ofFloat(this, "rotationY", 0f, 360f)
-                                        rotationAnimator.duration = 10000
-                                        rotationAnimator.repeatCount = android.animation.ValueAnimator.INFINITE
-                                        rotationAnimator.start()
-                                    }
-                                )
-                            )
+                                context = ctx
+                            ).apply {
+                                // تحميل الموديل من مجلد assets
+                                loadModel("robot.glb")
+                            }
                         },
                         modifier = Modifier.fillMaxSize()
                     )
