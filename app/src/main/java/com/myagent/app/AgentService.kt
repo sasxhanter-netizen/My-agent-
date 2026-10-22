@@ -747,7 +747,7 @@ end: عندما يريد المستخدم إنهاء المحادثة مثل خ�
                     return null
                 }
                 if (res.first == 503 || res.first == 429 || res.first == 500) {
-                    log("⏳ " + m + " مشغول (" + res.first + ")")
+            
                     Thread.sleep(1500)
                     continue
                 }
