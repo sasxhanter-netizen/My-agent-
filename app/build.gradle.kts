@@ -11,8 +11,8 @@ android {
         applicationId = "com.myagent.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.9"
+        versionCode = 4
+        versionName = "2.0"
     }
     buildFeatures {
         compose = true
@@ -36,6 +36,6 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
 
-    // مكتبة الـ 3D (إصدار مستقر)
-    implementation("io.github.sceneview:sceneview:2.1.0")
+    // مكتبة الـ 3D (الإصدار الأحدث والمدعوم)
+    implementation("io.github.sceneview:sceneview:4.35.0")
 }
