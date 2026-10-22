@@ -10,6 +10,8 @@ import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -26,17 +28,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import io.github.sceneview.SceneView
-import io.github.sceneview.node.ModelNode
-import io.github.sceneview.rememberCameraManipulator
-import io.github.sceneview.rememberEngine
-import io.github.sceneview.rememberEnvironmentLoader
-import io.github.sceneview.rememberModelInstance
-import io.github.sceneview.rememberModelLoader
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -141,7 +140,28 @@ fun AgentScreen(activity: Activity) {
                     ) { Text("Stop", color = Color.White) }
                 }
 
-                // عرض الروبوت 3D (الطريقة الصحيحة والحديثة)
+                // الروبوت الحقيقي مع أنيميشن تفاعلي
+                var isTapped by remember { mutableStateOf(false) }
+                val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+                val scale by infiniteTransition.animateFloat(
+                    initialValue = 0.96f,
+                    targetValue = 1.02f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(1500, easing = LinearEasing),
+                        repeatMode = RepeatMode.Reverse
+                    ), label = "scale"
+                )
+                val offsetY by infiniteTransition.animateFloat(
+                    initialValue = -5f,
+                    targetValue = 5f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(2000, easing = LinearEasing),
+                        repeatMode = RepeatMode.Reverse
+                    ), label = "offsetY"
+                )
+
+                val finalScale = if (isTapped) 0.85f else scale
+
                 Box(
                     modifier = Modifier
                         .weight(1f)
@@ -150,31 +170,30 @@ fun AgentScreen(activity: Activity) {
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null
                         ) {
-                            // تفاعل عند الضغط
+                            isTapped = true
                         },
                     contentAlignment = Alignment.Center
                 ) {
-                    val engine = rememberEngine()
-                    val modelLoader = rememberModelLoader(engine)
-                    val environmentLoader = rememberEnvironmentLoader(engine)
-                    val cameraManipulator = rememberCameraManipulator()
+                    Image(
+                        painter = painterResource(id = R.drawable.robot),
+                        contentDescription = "Avatar",
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(24.dp)
+                            .graphicsLayer {
+                                scaleX = finalScale
+                                scaleY = finalScale
+                                translationY = offsetY
+                            },
+                        contentScale = ContentScale.Fit
+                    )
+                }
 
-                    val modelInstance = rememberModelInstance(modelLoader, "robot.glb")
-
-                    SceneView(
-                        modifier = Modifier.fillMaxSize(),
-                        engine = engine,
-                        modelLoader = modelLoader,
-                        environmentLoader = environmentLoader,
-                        cameraManipulator = cameraManipulator
-                    ) {
-                        modelInstance?.let { instance ->
-                            ModelNode(
-                                modelInstance = instance,
-                                scaleToUnits = 1.0f,
-                                autoAnimate = true
-                            )
-                        }
+                // إعادة الحجم الطبيعي بعد اللمس
+                LaunchedEffect(isTapped) {
+                    if (isTapped) {
+                        delay(200)
+                        isTapped = false
                     }
                 }
 
