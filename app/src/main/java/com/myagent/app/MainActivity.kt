@@ -64,13 +64,12 @@ fun AgentScreen(activity: Activity) {
     var model by remember { mutableStateOf(prefs.getString("model", "gemini-2.5-flash") ?: "") }
     var isRunning by remember { mutableStateOf(Bus.running) }
     var showSettings by remember { mutableStateOf(false) }
-    var showChat by remember { mutableStateOf(false) } // المحادثة مخفية بالبداية
+    var showChat by remember { mutableStateOf(false) }
     var chatMessages by remember { mutableStateOf(listOf<Pair<String, String>>()) }
     
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
-    // تحديث المحادثة
     LaunchedEffect(Unit) {
         Bus.listener = { msg ->
             activity.runOnUiThread {
@@ -109,7 +108,6 @@ fun AgentScreen(activity: Activity) {
                         IconButton(onClick = { showSettings = true }) {
                             Box {
                                 Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
-                                // النقطة الحمراء (تجريبية)
                                 Box(modifier = Modifier.size(10.dp).background(Color.Red, CircleShape).align(Alignment.TopEnd))
                             }
                         }
@@ -140,16 +138,16 @@ fun AgentScreen(activity: Activity) {
                     ) { Text("Stop", color = Color.White) }
                 }
 
-                // الروبوت (مؤقتاً بنستخدم أيقونة كبيرة بدل الصورة)
+                // الروبوت الحقيقي (تم استبدال الأيقونة بالصورة)
                 Box(
                     modifier = Modifier.weight(1f),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.SmartToy,
+                    Image(
+                        painter = painterResource(id = R.drawable.robot_avatar),
                         contentDescription = "Avatar",
-                        modifier = Modifier.size(200.dp),
-                        tint = Color(0xFF00B4D8)
+                        modifier = Modifier.fillMaxSize().padding(24.dp),
+                        contentScale = ContentScale.Fit
                     )
                 }
 
