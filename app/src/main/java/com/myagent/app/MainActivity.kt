@@ -1,14 +1,18 @@
 package com.myagent.app
 
+import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Image
@@ -68,9 +72,26 @@ fun AgentScreen(activity: Activity) {
     var showSettings by remember { mutableStateOf(false) }
     var showChat by remember { mutableStateOf(false) }
     var chatMessages by remember { mutableStateOf(listOf<Pair<String, String>>()) }
+    var inputText by remember { mutableStateOf("") } // عشان الشات
     
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+
+    // طلب صلاحية الميكروفون والظهور فوق التطبيقات
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val micGranted = permissions[Manifest.permission.RECORD_AUDIO] ?: false
+        if (micGranted) {
+            if (!Settings.canDrawOverlays(context)) {
+                val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + context.packageName))
+                context.startActivity(intent)
+            } else {
+                context.startForegroundService(Intent(context, AgentService::class.java))
+                isRunning = true
+            }
+        }
+    }
 
     LaunchedEffect(Unit) {
         Bus.listener = { msg ->
@@ -128,7 +149,10 @@ fun AgentScreen(activity: Activity) {
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
                     Button(
-                        onClick = { context.startForegroundService(Intent(context, AgentService::class.java)); isRunning = true },
+                        onClick = { 
+                            // طلب الصلاحيات بدل ما التطبيق يقفل
+                            permissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+                        },
                         colors = ButtonDefaults.buttonColors(containerColor = if (isRunning) Color.Gray else Color(0xFF00C853)),
                         shape = RoundedCornerShape(50)
                     ) { Text("Start", color = Color.White) }
@@ -220,14 +244,14 @@ fun AgentScreen(activity: Activity) {
                     }
                 }
 
-                // شريط الكتابة
+                // شريط الكتابة (تم تفعيله)
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     OutlinedTextField(
-                        value = "",
-                        onValueChange = {},
+                        value = inputText,
+                        onValueChange = { inputText = it },
                         modifier = Modifier.weight(1f),
                         placeholder = { Text("Type a message...", color = Color.Gray) },
                         shape = RoundedCornerShape(24.dp),
@@ -238,7 +262,14 @@ fun AgentScreen(activity: Activity) {
                     )
                     Spacer(Modifier.width(8.dp))
                     FloatingActionButton(
-                        onClick = { /* Send text */ },
+                        onClick = {
+                            if (inputText.isNotBlank()) {
+                                Bus.post("أنت: $inputText")
+                                chatMessages = chatMessages + Pair("You", inputText)
+                                // هنا ممكن نضيف كود يبعت النص للـ AgentService
+                                inputText = ""
+                            }
+                        },
                         containerColor = Color(0xFF00B4D8),
                         shape = CircleShape
                     ) {
