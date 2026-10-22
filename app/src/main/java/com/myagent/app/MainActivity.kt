@@ -328,22 +328,24 @@ fun AgentScreen(activity: Activity) {
                     Spacer(Modifier.width(8.dp))
                     FloatingActionButton(
                         onClick = {
-                            if (inputText.isNotBlank()) {
-                                Bus.post("أنت: $inputText")
-                                chatMessages = chatMessages + Pair("You", inputText)
-                                inputText = ""
-                            }
-                        },
-                        containerColor = Color(0xFF00B4D8),
-                        shape = CircleShape
-                    ) {
-                        Icon(Icons.Default.Send, contentDescription = "Send", tint = Color.White)
-                    }
-                }
-            }
+    if (inputText.isNotBlank()) {
+        val msg = inputText
+        Bus.post("أنت: $msg")
+        chatMessages = chatMessages + Pair("You", msg)
+        inputText = ""
+        
+        // إرسال النص للخدمة
+        val intent = Intent(context, AgentService::class.java).apply {
+            action = "TEXT_INPUT"
+            putExtra("text", msg)
+        }
+        if (Build.VERSION.SDK_INT >= 26) {
+            context.startForegroundService(intent)
+        } else {
+            context.startService(intent)
         }
     }
-
+},
     // نافذة الإعدادات والإشعارات
     if (showSettings) {
         AlertDialog(
