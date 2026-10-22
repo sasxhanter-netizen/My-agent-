@@ -144,7 +144,7 @@ fun AgentScreen(activity: Activity) {
                     contentAlignment = Alignment.Center
                 ) {
                     Image(
-                        painter = painterResource(id = R.drawable.robot_avatar),
+                        painter = painterResource(id = R.drawable.robot),
                         contentDescription = "Avatar",
                         modifier = Modifier.fillMaxSize().padding(24.dp),
                         contentScale = ContentScale.Fit
