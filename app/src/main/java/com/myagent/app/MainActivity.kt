@@ -10,8 +10,6 @@ import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.*
-import androidx.compose.animation.core.*
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -23,21 +21,17 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.delay
+import androidx.compose.ui.viewinterop.AndroidView
+import io.github.sceneview.SceneView
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -142,20 +136,7 @@ fun AgentScreen(activity: Activity) {
                     ) { Text("Stop", color = Color.White) }
                 }
 
-                // الروبوت الحقيقي مع أنيميشن تفاعلي
-                var isTapped by remember { mutableStateOf(false) }
-                val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-                val scale by infiniteTransition.animateFloat(
-                    initialValue = 0.96f,
-                    targetValue = 1.02f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(1200, easing = LinearEasing),
-                        repeatMode = RepeatMode.Reverse
-                    ), label = "scale"
-                )
-
-                val finalScale = if (isTapped) 0.85f else scale
-
+                // عرض الروبوت 3D
                 Box(
                     modifier = Modifier
                         .weight(1f)
@@ -164,30 +145,32 @@ fun AgentScreen(activity: Activity) {
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null
                         ) {
-                            isTapped = true
+                            // تفاعل عند الضغط
                         },
                     contentAlignment = Alignment.Center
                 ) {
-                    Image(
-                        painter = painterResource(id = R.drawable.robot),
-                        contentDescription = "Avatar",
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(24.dp)
-                            .graphicsLayer {
-                                scaleX = finalScale
-                                scaleY = finalScale
-                            },
-                        contentScale = ContentScale.Fit
+                    AndroidView(
+                        factory = { ctx ->
+                            SceneView(
+                                context = ctx,
+                                engine = io.github.sceneview.node.Engine.create(),
+                                childNodes = mutableListOf(
+                                    io.github.sceneview.node.ModelNode(
+                                        context = ctx,
+                                        glbAsset = "robot.glb",
+                                        scaleToUnits = 1.0f
+                                    ).apply {
+                                        // تحريك الموديل بشكل دائري بطيء
+                                        val rotationAnimator = android.animation.ObjectAnimator.ofFloat(this, "rotationY", 0f, 360f)
+                                        rotationAnimator.duration = 10000
+                                        rotationAnimator.repeatCount = android.animation.ValueAnimator.INFINITE
+                                        rotationAnimator.start()
+                                    }
+                                )
+                            )
+                        },
+                        modifier = Modifier.fillMaxSize()
                     )
-                }
-
-                // إعادة الحجم الطبيعي بعد اللمس
-                LaunchedEffect(isTapped) {
-                    if (isTapped) {
-                        delay(200)
-                        isTapped = false
-                    }
                 }
 
                 // سهم فتح المحادثة
