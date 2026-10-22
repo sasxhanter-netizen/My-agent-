@@ -6,13 +6,13 @@ plugins {
 
 android {
     namespace = "com.myagent.app"
-    compileSdk = 34 // رجعناه 34 عشان نستخدم إصدار مستقر من المكتبة
+    compileSdk = 34
     defaultConfig {
         applicationId = "com.myagent.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 5
-        versionName = "2.1"
+        versionCode = 6
+        versionName = "2.2"
     }
     buildFeatures {
         compose = true
@@ -35,5 +35,4 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
-
 }
