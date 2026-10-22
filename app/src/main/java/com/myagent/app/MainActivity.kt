@@ -10,9 +10,11 @@ import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.*
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -28,12 +30,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -138,17 +142,52 @@ fun AgentScreen(activity: Activity) {
                     ) { Text("Stop", color = Color.White) }
                 }
 
-                // الروبوت الحقيقي (تم استبدال الأيقونة بالصورة)
+                // الروبوت الحقيقي مع أنيميشن تفاعلي
+                var isTapped by remember { mutableStateOf(false) }
+                val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+                val scale by infiniteTransition.animateFloat(
+                    initialValue = 0.96f,
+                    targetValue = 1.02f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(1200, easing = LinearEasing),
+                        repeatMode = RepeatMode.Reverse
+                    ), label = "scale"
+                )
+
+                val finalScale = if (isTapped) 0.85f else scale
+
                 Box(
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) {
+                            isTapped = true
+                        },
                     contentAlignment = Alignment.Center
                 ) {
                     Image(
                         painter = painterResource(id = R.drawable.robot),
                         contentDescription = "Avatar",
-                        modifier = Modifier.fillMaxSize().padding(24.dp),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(24.dp)
+                            .graphicsLayer {
+                                scaleX = finalScale
+                                scaleY = finalScale
+                            },
                         contentScale = ContentScale.Fit
                     )
+                }
+
+                // إعادة الحجم الطبيعي بعد اللمس
+                LaunchedEffect(isTapped) {
+                    if (isTapped) {
+                        delay(200)
+                        isTapped = false
+                    }
                 }
 
                 // سهم فتح المحادثة
