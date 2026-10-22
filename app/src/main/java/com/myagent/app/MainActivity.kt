@@ -74,7 +74,6 @@ fun AgentScreen(activity: Activity) {
     var chatMessages by remember { mutableStateOf(listOf<Pair<String, String>>()) }
     var inputText by remember { mutableStateOf("") }
     
-    // إدارة الأخطاء
     var hasError by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf("") }
     
@@ -100,7 +99,7 @@ fun AgentScreen(activity: Activity) {
         Bus.listener = { msg ->
             activity.runOnUiThread {
                 if (msg.contains("429") || msg.contains("مشغول")) {
-                    // تجاهل رسائل الـ 429 في الشات
+                    // تجاهل
                 } else if (msg.contains("خطأ") || msg.contains("فشل") || msg.contains("نفدت")) {
                     hasError = true
                     errorMessage = msg
@@ -125,7 +124,6 @@ fun AgentScreen(activity: Activity) {
                     scope.launch { drawerState.close() } 
                 }
                 
-                // 1. الذاكرة (المعلومات المحفوظة فقط)
                 DrawerItem(Icons.Default.Memory, "الذاكرة (معلومات)") { 
                     val mem = prefs.getString("mem", "") ?: ""
                     if (mem.isBlank()) {
@@ -137,7 +135,6 @@ fun AgentScreen(activity: Activity) {
                     scope.launch { drawerState.close() } 
                 }
 
-                // 2. سجل المحادثات (الجلسة الحالية)
                 DrawerItem(Icons.Default.History, "سجل المحادثات") { 
                     if (chatMessages.isEmpty()) {
                         Bus.post("سجل المحادثات فارغ.. ابدأ الكلام مع الوكيل.")
@@ -210,7 +207,6 @@ fun AgentScreen(activity: Activity) {
                 modifier = Modifier.padding(padding).fillMaxSize().background(Color(0xFF121212)),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // أزرار التشغيل والإيقاف
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
                     horizontalArrangement = Arrangement.SpaceEvenly
@@ -230,7 +226,6 @@ fun AgentScreen(activity: Activity) {
                     ) { Text("Stop", color = Color.White) }
                 }
 
-                // الروبوت
                 var isTapped by remember { mutableStateOf(false) }
                 val infiniteTransition = rememberInfiniteTransition(label = "pulse")
                 val scale by infiniteTransition.animateFloat(
@@ -286,12 +281,10 @@ fun AgentScreen(activity: Activity) {
                     }
                 }
 
-                // سهم المحادثة
                 IconButton(onClick = { showChat = !showChat }) {
                     Icon(if (showChat) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowUp, contentDescription = "Toggle Chat", tint = Color.White)
                 }
 
-                // سجل المحادثة
                 AnimatedVisibility(visible = showChat) {
                     Card(
                         modifier = Modifier.fillMaxWidth().height(250.dp).padding(8.dp),
@@ -309,7 +302,6 @@ fun AgentScreen(activity: Activity) {
                     }
                 }
 
-                // شريط الكتابة
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(8.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -328,25 +320,33 @@ fun AgentScreen(activity: Activity) {
                     Spacer(Modifier.width(8.dp))
                     FloatingActionButton(
                         onClick = {
-    if (inputText.isNotBlank()) {
-        val msg = inputText
-        Bus.post("أنت: $msg")
-        chatMessages = chatMessages + Pair("You", msg)
-        inputText = ""
-        
-        // إرسال النص للخدمة
-        val intent = Intent(context, AgentService::class.java).apply {
-            action = "TEXT_INPUT"
-            putExtra("text", msg)
-        }
-        if (Build.VERSION.SDK_INT >= 26) {
-            context.startForegroundService(intent)
-        } else {
-            context.startService(intent)
+                            if (inputText.isNotBlank()) {
+                                val msg = inputText
+                                Bus.post("أنت: $msg")
+                                chatMessages = chatMessages + Pair("You", msg)
+                                inputText = ""
+                                
+                                val intent = Intent(context, AgentService::class.java).apply {
+                                    action = "TEXT_INPUT"
+                                    putExtra("text", msg)
+                                }
+                                if (Build.VERSION.SDK_INT >= 26) {
+                                    context.startForegroundService(intent)
+                                } else {
+                                    context.startService(intent)
+                                }
+                            }
+                        },
+                        containerColor = Color(0xFF00B4D8),
+                        shape = CircleShape
+                    ) {
+                        Icon(Icons.Default.Send, contentDescription = "Send", tint = Color.White)
+                    }
+                }
+            }
         }
     }
-},
-    // نافذة الإعدادات والإشعارات
+
     if (showSettings) {
         AlertDialog(
             onDismissRequest = { showSettings = false },
@@ -369,7 +369,6 @@ fun AgentScreen(activity: Activity) {
                         modifier = Modifier.fillMaxWidth()
                     )
                     
-                    // عرض الخطأ لو موجود
                     if (hasError) {
                         Spacer(Modifier.height(16.dp))
                         Text("⚠️ إشعار هام:", color = Color.Red, fontWeight = FontWeight.Bold)
