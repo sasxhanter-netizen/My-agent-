@@ -72,12 +72,15 @@ fun AgentScreen(activity: Activity) {
     var showSettings by remember { mutableStateOf(false) }
     var showChat by remember { mutableStateOf(false) }
     var chatMessages by remember { mutableStateOf(listOf<Pair<String, String>>()) }
-    var inputText by remember { mutableStateOf("") } // عشان الشات
+    var inputText by remember { mutableStateOf("") }
+    
+    // إدارة الأخطاء
+    var hasError by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf("") }
     
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
-    // طلب صلاحية الميكروفون والظهور فوق التطبيقات
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
@@ -96,7 +99,15 @@ fun AgentScreen(activity: Activity) {
     LaunchedEffect(Unit) {
         Bus.listener = { msg ->
             activity.runOnUiThread {
-                chatMessages = chatMessages + Pair("Agent", msg)
+                if (msg.contains("429") || msg.contains("مشغول")) {
+                    // تجاهل رسائل الـ 429 في الشات
+                } else if (msg.contains("خطأ") || msg.contains("فشل") || msg.contains("نفدت")) {
+                    hasError = true
+                    errorMessage = msg
+                    chatMessages = chatMessages + Pair("System", "⚠️ حدث خطأ، يرجى مراجعة الإعدادات.")
+                } else {
+                    chatMessages = chatMessages + Pair("Agent", msg)
+                }
             }
         }
     }
@@ -131,7 +142,9 @@ fun AgentScreen(activity: Activity) {
                         IconButton(onClick = { showSettings = true }) {
                             Box {
                                 Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
-                                Box(modifier = Modifier.size(10.dp).background(Color.Red, CircleShape).align(Alignment.TopEnd))
+                                if (hasError) {
+                                    Box(modifier = Modifier.size(10.dp).background(Color.Red, CircleShape).align(Alignment.TopEnd))
+                                }
                             }
                         }
                     },
@@ -150,7 +163,6 @@ fun AgentScreen(activity: Activity) {
                 ) {
                     Button(
                         onClick = { 
-                            // طلب الصلاحيات بدل ما التطبيق يقفل
                             permissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = if (isRunning) Color.Gray else Color(0xFF00C853)),
@@ -164,7 +176,7 @@ fun AgentScreen(activity: Activity) {
                     ) { Text("Stop", color = Color.White) }
                 }
 
-                // الروبوت الحقيقي مع أنيميشن تفاعلي
+                // الروبوت
                 var isTapped by remember { mutableStateOf(false) }
                 val infiniteTransition = rememberInfiniteTransition(label = "pulse")
                 val scale by infiniteTransition.animateFloat(
@@ -213,7 +225,6 @@ fun AgentScreen(activity: Activity) {
                     )
                 }
 
-                // إعادة الحجم الطبيعي بعد اللمس
                 LaunchedEffect(isTapped) {
                     if (isTapped) {
                         delay(200)
@@ -221,7 +232,7 @@ fun AgentScreen(activity: Activity) {
                     }
                 }
 
-                // سهم فتح المحادثة
+                // سهم المحادثة
                 IconButton(onClick = { showChat = !showChat }) {
                     Icon(if (showChat) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowUp, contentDescription = "Toggle Chat", tint = Color.White)
                 }
@@ -244,7 +255,7 @@ fun AgentScreen(activity: Activity) {
                     }
                 }
 
-                // شريط الكتابة (تم تفعيله)
+                // شريط الكتابة
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(8.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -266,7 +277,6 @@ fun AgentScreen(activity: Activity) {
                             if (inputText.isNotBlank()) {
                                 Bus.post("أنت: $inputText")
                                 chatMessages = chatMessages + Pair("You", inputText)
-                                // هنا ممكن نضيف كود يبعت النص للـ AgentService
                                 inputText = ""
                             }
                         },
@@ -280,6 +290,7 @@ fun AgentScreen(activity: Activity) {
         }
     }
 
+    // نافذة الإعدادات والإشعارات
     if (showSettings) {
         AlertDialog(
             onDismissRequest = { showSettings = false },
@@ -301,6 +312,20 @@ fun AgentScreen(activity: Activity) {
                         label = { Text("Model") },
                         modifier = Modifier.fillMaxWidth()
                     )
+                    
+                    // عرض الخطأ لو موجود
+                    if (hasError) {
+                        Spacer(Modifier.height(16.dp))
+                        Text("⚠️ إشعار هام:", color = Color.Red, fontWeight = FontWeight.Bold)
+                        Text(errorMessage, color = Color.LightGray, fontSize = 12.sp)
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            onClick = { hasError = false; errorMessage = "" },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray)
+                        ) {
+                            Text("مسح الإشعار", color = Color.White)
+                        }
+                    }
                 }
             },
             confirmButton = {
@@ -333,7 +358,7 @@ fun ChatBubble(sender: String, message: String) {
     ) {
         Card(
             colors = CardDefaults.cardColors(
-                containerColor = if (isUser) Color(0xFF00B4D8) else Color(0xFF2C2C2C)
+                containerColor = if (isUser) Color(0xFF00B4D8) else if (sender == "System") Color(0xFF8B0000) else Color(0xFF2C2C2C)
             ),
             shape = RoundedCornerShape(12.dp)
         ) {
