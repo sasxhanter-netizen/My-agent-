@@ -30,8 +30,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
 import io.github.sceneview.SceneView
+import io.github.sceneview.node.ModelNode
+import io.github.sceneview.rememberCameraManipulator
+import io.github.sceneview.rememberEngine
+import io.github.sceneview.rememberEnvironmentLoader
+import io.github.sceneview.rememberModelInstance
+import io.github.sceneview.rememberModelLoader
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -136,7 +141,7 @@ fun AgentScreen(activity: Activity) {
                     ) { Text("Stop", color = Color.White) }
                 }
 
-                // عرض الروبوت 3D
+                // عرض الروبوت 3D (الطريقة الصحيحة والحديثة)
                 Box(
                     modifier = Modifier
                         .weight(1f)
@@ -149,17 +154,28 @@ fun AgentScreen(activity: Activity) {
                         },
                     contentAlignment = Alignment.Center
                 ) {
-                    AndroidView(
-                        factory = { ctx ->
-                            SceneView(
-                                context = ctx
-                            ).apply {
-                                // تحميل الموديل من مجلد assets
-                                loadModel("robot.glb")
-                            }
-                        },
-                        modifier = Modifier.fillMaxSize()
-                    )
+                    val engine = rememberEngine()
+                    val modelLoader = rememberModelLoader(engine)
+                    val environmentLoader = rememberEnvironmentLoader(engine)
+                    val cameraManipulator = rememberCameraManipulator()
+
+                    val modelInstance = rememberModelInstance(modelLoader, "robot.glb")
+
+                    SceneView(
+                        modifier = Modifier.fillMaxSize(),
+                        engine = engine,
+                        modelLoader = modelLoader,
+                        environmentLoader = environmentLoader,
+                        cameraManipulator = cameraManipulator
+                    ) {
+                        modelInstance?.let { instance ->
+                            ModelNode(
+                                modelInstance = instance,
+                                scaleToUnits = 1.0f,
+                                autoAnimate = true
+                            )
+                        }
+                    }
                 }
 
                 // سهم فتح المحادثة
