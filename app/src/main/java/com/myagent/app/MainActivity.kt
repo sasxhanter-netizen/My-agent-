@@ -74,6 +74,7 @@ fun AgentScreen(activity: Activity) {
     var chatMessages by remember { mutableStateOf(listOf<Pair<String, String>>()) }
     var inputText by remember { mutableStateOf("") }
     
+    // إدارة الأخطاء
     var hasError by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf("") }
     
@@ -99,7 +100,7 @@ fun AgentScreen(activity: Activity) {
         Bus.listener = { msg ->
             activity.runOnUiThread {
                 if (msg.contains("429") || msg.contains("مشغول")) {
-                    // تجاهل
+                    // تجاهل رسائل الـ 429
                 } else if (msg.contains("خطأ") || msg.contains("فشل") || msg.contains("نفدت")) {
                     hasError = true
                     errorMessage = msg
@@ -138,10 +139,8 @@ fun AgentScreen(activity: Activity) {
                 DrawerItem(Icons.Default.History, "سجل المحادثات") { 
                     if (chatMessages.isEmpty()) {
                         Bus.post("سجل المحادثات فارغ.. ابدأ الكلام مع الوكيل.")
-                        showChat = true
-                    } else {
-                        showChat = true 
                     }
+                    showChat = true 
                     scope.launch { drawerState.close() } 
                 }
                 
