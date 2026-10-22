@@ -6,11 +6,11 @@ plugins {
 
 android {
     namespace = "com.myagent.app"
-    compileSdk = 34
+    compileSdk = 35 // تم التحديث ليتوافق مع AGP 8.6.0 و SceneView
     defaultConfig {
         applicationId = "com.myagent.app"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 35 // تم التحديث ليتوافق مع المتطلبات
         versionCode = 4
         versionName = "2.0"
     }
@@ -36,6 +36,6 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
 
-    // مكتبة الـ 3D (الإصدار الأحدث والمدعوم)
+    // مكتبة الـ 3D
     implementation("io.github.sceneview:sceneview:4.35.0")
 }
