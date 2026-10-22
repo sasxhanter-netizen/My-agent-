@@ -225,7 +225,17 @@ end: عندما يريد المستخدم إنهاء المحادثة مثل خ�
 
     override fun onBind(i: Intent?): IBinder? = null
 
-    override fun onStartCommand(i: Intent?, f: Int, id: Int): Int = START_NOT_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    // التعامل مع النص القادم من الواجهة
+    if (intent?.action == "TEXT_INPUT") {
+        val text = intent.getStringExtra("text")
+        if (!text.isNullOrBlank()) {
+            // استدعاء دالة ask اللي بتتعامل مع Gemini
+            ask(text)
+        }
+    }
+    return START_NOT_STICKY
+}
 
     override fun onCreate() {
         super.onCreate()
