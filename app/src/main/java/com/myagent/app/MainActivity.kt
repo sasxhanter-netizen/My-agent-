@@ -119,13 +119,55 @@ fun AgentScreen(activity: Activity) {
                 Spacer(Modifier.height(24.dp))
                 Text("MyAgent", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00B4D8), modifier = Modifier.padding(16.dp))
                 Divider(color = Color.DarkGray)
-                DrawerItem(Icons.Default.Settings, "Settings") { showSettings = true; scope.launch { drawerState.close() } }
-                DrawerItem(Icons.Default.Memory, "Memory") { /* Logic */ scope.launch { drawerState.close() } }
-                DrawerItem(Icons.Default.ModelTraining, "Models") { /* Logic */ scope.launch { drawerState.close() } }
-                DrawerItem(Icons.Default.Folder, "Files") { openFilesAccess(context); scope.launch { drawerState.close() } }
-                DrawerItem(Icons.Default.Notifications, "Notifications") { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)); scope.launch { drawerState.close() } }
-                DrawerItem(Icons.Default.Explore, "Wander") { /* Logic */ scope.launch { drawerState.close() } }
-                DrawerItem(Icons.Default.Accessibility, "Accessibility") { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)); scope.launch { drawerState.close() } }
+                
+                DrawerItem(Icons.Default.Settings, "Settings") { 
+                    showSettings = true
+                    scope.launch { drawerState.close() } 
+                }
+                
+                DrawerItem(Icons.Default.Memory, "Memory") { 
+                    val mem = prefs.getString("mem", "") ?: ""
+                    if (mem.isBlank()) {
+                        Bus.post("الذاكرة فاضية")
+                    } else {
+                        Bus.post("🧠 معلومات محفوظة:\n$mem")
+                        showChat = true
+                    }
+                    scope.launch { drawerState.close() } 
+                }
+                
+                DrawerItem(Icons.Default.ModelTraining, "Models") { 
+                    if (apiKey.isBlank()) {
+                        Bus.post("⚠️ اكتب مفتاح Gemini أولاً في الإعدادات")
+                    } else {
+                        Bus.post("جاري جلب الموديلات المتاحة...")
+                    }
+                    scope.launch { drawerState.close() } 
+                }
+                
+                DrawerItem(Icons.Default.Folder, "Files") { 
+                    openFilesAccess(context)
+                    scope.launch { drawerState.close() } 
+                }
+                
+                DrawerItem(Icons.Default.Notifications, "Notifications") { 
+                    context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                    Bus.post("فعّل MyAgent في قائمة الوصول للإشعارات")
+                    scope.launch { drawerState.close() } 
+                }
+                
+                DrawerItem(Icons.Default.Explore, "Wander") { 
+                    val current = prefs.getBoolean("wander", true)
+                    prefs.edit().putBoolean("wander", !current).apply()
+                    Bus.post("التجول: " + if (!current) "شغال ✅" else "متوقف ⏹")
+                    scope.launch { drawerState.close() } 
+                }
+                
+                DrawerItem(Icons.Default.Accessibility, "Accessibility") { 
+                    context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    Bus.post("فعّل MyAgent من الخدمات المثبتة ثم ارجع")
+                    scope.launch { drawerState.close() } 
+                }
             }
         }
     ) {
