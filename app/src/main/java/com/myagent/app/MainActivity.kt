@@ -125,13 +125,25 @@ fun AgentScreen(activity: Activity) {
                     scope.launch { drawerState.close() } 
                 }
                 
-                DrawerItem(Icons.Default.Memory, "Memory") { 
+                // 1. الذاكرة (المعلومات المحفوظة فقط)
+                DrawerItem(Icons.Default.Memory, "الذاكرة (معلومات)") { 
                     val mem = prefs.getString("mem", "") ?: ""
                     if (mem.isBlank()) {
-                        Bus.post("الذاكرة فاضية")
+                        Bus.post("الذاكرة فاضية.. لم يحفظ الوكيل أي معلومات بعد.")
                     } else {
                         Bus.post("🧠 معلومات محفوظة:\n$mem")
+                    }
+                    showChat = true
+                    scope.launch { drawerState.close() } 
+                }
+
+                // 2. سجل المحادثات (الجلسة الحالية)
+                DrawerItem(Icons.Default.History, "سجل المحادثات") { 
+                    if (chatMessages.isEmpty()) {
+                        Bus.post("سجل المحادثات فارغ.. ابدأ الكلام مع الوكيل.")
                         showChat = true
+                    } else {
+                        showChat = true 
                     }
                     scope.launch { drawerState.close() } 
                 }
