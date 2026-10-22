@@ -36,6 +36,4 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
 
-    // إصدار مستقر ومش بيتطلب SDK 37
-    implementation("io.github.sceneview:sceneview:2.3.0") 
 }
