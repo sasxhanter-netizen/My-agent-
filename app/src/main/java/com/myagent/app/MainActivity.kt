@@ -102,7 +102,7 @@ fun AgentScreen(activity: Activity) {
         Bus.listener = { msg ->
             activity.runOnUiThread {
                 if (msg.contains("429") || msg.contains("مشغول")) {
-                    // تجاهل رسائل الـ 429 والمحاولات
+                    // تجاهل
                 } else if (msg.contains("خطأ") || msg.contains("فشل") || msg.contains("نفدت") || msg.contains("فشلت")) {
                     hasError = true
                     errorMessage = msg
@@ -119,7 +119,7 @@ fun AgentScreen(activity: Activity) {
         drawerContent = {
             ModalDrawerSheet(drawerContainerColor = Color(0xFF121212)) {
                 Spacer(Modifier.height(24.dp))
-                Text("MyAgent", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00B4D8), modifier = Modifier.padding(16.dp))
+                Text("Anubis", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00B4D8), modifier = Modifier.padding(16.dp))
                 Divider(color = Color.DarkGray)
                 
                 DrawerItem(Icons.Default.Settings, "Settings") { 
@@ -130,7 +130,7 @@ fun AgentScreen(activity: Activity) {
                 DrawerItem(Icons.Default.Memory, "الذاكرة (معلومات)") { 
                     val mem = prefs.getString("mem", "") ?: ""
                     if (mem.isBlank()) {
-                        Bus.post("الذاكرة فاضية.. لم يحفظ الوكيل أي معلومات بعد.")
+                        Bus.post("الذاكرة فاضية.. لم يحفظ أنوبيس أي معلومات بعد.")
                     } else {
                         Bus.post("🧠 معلومات محفوظة:\n$mem")
                     }
@@ -140,7 +140,7 @@ fun AgentScreen(activity: Activity) {
 
                 DrawerItem(Icons.Default.History, "سجل المحادثات") { 
                     if (chatMessages.isEmpty()) {
-                        Bus.post("سجل المحادثات فارغ.. ابدأ الكلام مع الوكيل.")
+                        Bus.post("سجل المحادثات فارغ.. ابدأ الكلام مع أنوبيس.")
                     }
                     showChat = true 
                     scope.launch { drawerState.close() } 
@@ -162,7 +162,7 @@ fun AgentScreen(activity: Activity) {
                 
                 DrawerItem(Icons.Default.Notifications, "Notifications") { 
                     context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-                    Bus.post("فعّل MyAgent في قائمة الوصول للإشعارات")
+                    Bus.post("فعّل Anubis في قائمة الوصول للإشعارات")
                     scope.launch { drawerState.close() } 
                 }
                 
@@ -175,7 +175,7 @@ fun AgentScreen(activity: Activity) {
                 
                 DrawerItem(Icons.Default.Accessibility, "Accessibility") { 
                     context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                    Bus.post("فعّل MyAgent من الخدمات المثبتة ثم ارجع")
+                    Bus.post("فعّل Anubis من الخدمات المثبتة ثم ارجع")
                     scope.launch { drawerState.close() } 
                 }
             }
@@ -184,7 +184,7 @@ fun AgentScreen(activity: Activity) {
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("MyAgent", fontWeight = FontWeight.Bold, color = Color(0xFF00B4D8)) },
+                    title = { Text("Anubis", fontWeight = FontWeight.Bold, color = Color(0xFF00B4D8)) },
                     navigationIcon = {
                         IconButton(onClick = { scope.launch { drawerState.open() } }) {
                             Icon(Icons.Default.Menu, contentDescription = "Menu", tint = Color.White)
