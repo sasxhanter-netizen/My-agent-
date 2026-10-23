@@ -7,13 +7,35 @@ plugins {
 android {
     namespace = "com.myagent.app"
     compileSdk = 34
+
     defaultConfig {
         applicationId = "com.myagent.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 8 // تم التحديث عشان يعمل Update
-        versionName = "3.1" // اسم النسخة الجديدة
+        versionCode = 10 // رقم جديد
+        versionName = "3.3"
     }
+
+    signingConfigs {
+        create("release") {
+            storeFile = file("release.keystore")
+            storePassword = System.getenv("KEYSTORE_PASSWORD")
+            keyAlias = System.getenv("KEY_ALIAS")
+            keyPassword = System.getenv("KEY_PASSWORD")
+        }
+    }
+
+    buildTypes {
+        getByName("debug") {
+            // عشان الـ debug يشتغل برضه
+            signingConfig = signingConfigs.getByName("release")
+        }
+        getByName("release") {
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
+        }
+    }
+
     buildFeatures {
         compose = true
     }
