@@ -29,14 +29,22 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      - name: Decode Keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > app/release.keystore
+
       - name: Build APK
         run: gradle assembleDebug --no-daemon
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
       - name: Rename APK for easier download
-        run: mv app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/Anubis-v3.0.apk
+        run: mv app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/Anubis-v3.3.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Anubis-APK
-          path: app/build/outputs/apk/debug/Anubis-v3.0.apk
+          path: app/build/outputs/apk/debug/Anubis-v3.3.apk
