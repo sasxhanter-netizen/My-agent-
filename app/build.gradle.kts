@@ -11,8 +11,8 @@ android {
         applicationId = "com.myagent.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 6
-        versionName = "2.2"
+        versionCode = 7 // تم التحديث عشان يعمل Update
+        versionName = "3.0" // اسم النسخة الجديدة
     }
     buildFeatures {
         compose = true
@@ -35,5 +35,4 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
-
 }
