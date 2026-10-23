@@ -723,51 +723,116 @@ end: عندما يريد المستخدم إنهاء المحادثة مثل خ�
         }
     }
 
-    private fun gen(sysText: String, contents: JSONArray, json: Boolean, search: Boolean): String? {
-        val key = prefs.getString("key", "") ?: ""
-        if (key.isBlank()) { log("اكتب مفتاح Gemini أولاً"); return null }
-        if (!online()) { log("لا يوجد اتصال بالنت"); return null }
-        val chosen = (prefs.getString("model", "") ?: "").trim()
-        val models = (listOf(chosen) + discoverModels(prefs, key).take(5) + listOf("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest"))
-            .filter { it.isNotBlank() }.distinct().take(6)
-        val sys = JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sysText)))
-        val b = JSONObject().put("system_instruction", sys).put("contents", contents)
-        if (json) b.put("generationConfig", JSONObject().put("responseMimeType", "application/json"))
-        if (search) b.put("tools", JSONArray().put(JSONObject().put("google_search", JSONObject())))
-        val body = b.toString()
-        var lastErr = ""
-        for (m in models) {
-            for (attempt in 1..2) {
-                val res = try {
-                    callModel(m, key, body)
-                } catch (e: Exception) {
-                    log("خطأ شبكة: " + e.message)
-                    return null
-                }
-                if (res.first in 200..299) {
-                    val ans = extractText(res.second)
-                    if (ans != null) return ans
-                    lastErr = "رد فارغ من " + m
-                    log(lastErr)
-                    break
-                }
-                lastErr = "خطأ " + res.first + " (" + m + ")"
-                if (res.first == 401 || res.first == 403 || res.second.contains("API_KEY_INVALID")) {
-                    log(lastErr + " - تأكد من المفتاح")
-                    return null
-                }
-                if (res.first == 503 || res.first == 429 || res.first == 500) {
-            
-                    Thread.sleep(1500)
-                    continue
-                }
-                log(lastErr + ": " + reason(res.second))
-                break
-            }
-        }
-        log("فشلت كل المحاولات. " + lastErr)
-        return null
+    private fun callGroq(model: String, key: String, body: String): Pair<Int, String> {
+    val c = URL("https://api.groq.com/openai/v1/chat/completions").openConnection() as HttpURLConnection
+    c.requestMethod = "POST"
+    c.setRequestProperty("Content-Type", "application/json")
+    c.setRequestProperty("Authorization", "Bearer $key")
+    c.doOutput = true
+    c.connectTimeout = 20000
+    c.readTimeout = 60000
+    c.outputStream.use { it.write(body.toByteArray()) }
+    val code = c.responseCode
+    val txt = (if (code in 200..299) c.inputStream else c.errorStream).bufferedReader().use { it.readText() }
+    return Pair(code, txt)
+}
+
+private fun callOpenRouter(model: String, key: String, body: String): Pair<Int, String> {
+    val c = URL("https://openrouter.ai/api/v1/chat/completions").openConnection() as HttpURLConnection
+    c.requestMethod = "POST"
+    c.setRequestProperty("Content-Type", "application/json")
+    c.setRequestProperty("Authorization", "Bearer $key")
+    c.setRequestProperty("HTTP-Referer", "https://myagent.app")
+    c.setRequestProperty("X-Title", "MyAgent")
+    c.doOutput = true
+    c.connectTimeout = 20000
+    c.readTimeout = 60000
+    c.outputStream.use { it.write(body.toByteArray()) }
+    val code = c.responseCode
+    val txt = (if (code in 200..299) c.inputStream else c.errorStream).bufferedReader().use { it.readText() }
+    return Pair(code, txt)
+}
+
+private fun extractOpenAIText(txt: String): String? {
+    return try {
+        val content = JSONObject(txt).getJSONArray("choices").getJSONObject(0)
+            .getJSONObject("message").getString("content")
+        if (content.isBlank()) null else content
+    } catch (e: Exception) {
+        null
     }
+}
+
+private fun buildOpenAIBody(system: String, contents: JSONArray, json: Boolean): String {
+    val messages = JSONArray()
+    messages.put(JSONObject().put("role", "system").put("content", system))
+    for (i in 0 until contents.length()) {
+        val msg = contents.getJSONObject(i)
+        val role = if (msg.optString("role") == "model") "assistant" else "user"
+        val text = msg.getJSONArray("parts").getJSONObject(0).optString("text", "")
+        messages.put(JSONObject().put("role", role).put("content", text))
+    }
+    val body = JSONObject().put("messages", messages).put("temperature", 0.7)
+    if (json) body.put("response_format", JSONObject().put("type", "json_object"))
+    return body.toString()
+}
+
+private fun gen(sysText: String, contents: JSONArray, json: Boolean, search: Boolean): String? {
+    if (!online()) { log("لا يوجد اتصال بالنت"); return null }
+
+    // 1. OpenRouter
+    val orKey = prefs.getString("openrouter_key", "") ?: ""
+    if (orKey.isNotBlank()) {
+        val body = buildOpenAIBody(sysText, contents, json)
+        val res = try { callOpenRouter("deepseek/deepseek-r1:free", orKey, body) } catch (e: Exception) { Pair(0, "") }
+        if (res.first in 200..299) {
+            val ans = extractOpenAIText(res.second)
+            if (ans != null) return ans
+        } else {
+            log("OpenRouter: جاري التحويل...")
+        }
+    }
+
+    // 2. Groq
+    val gqKey = prefs.getString("groq_key", "") ?: ""
+    if (gqKey.isNotBlank()) {
+        val body = buildOpenAIBody(sysText, contents, json)
+        val res = try { callGroq("llama-3.3-70b-versatile", gqKey, body) } catch (e: Exception) { Pair(0, "") }
+        if (res.first in 200..299) {
+            val ans = extractOpenAIText(res.second)
+            if (ans != null) return ans
+        } else {
+            log("Groq: جاري التحويل...")
+        }
+    }
+
+    // 3. Gemini
+    val key = prefs.getString("key", "") ?: ""
+    if (key.isBlank()) { log("اكتب مفتاح Gemini أولاً"); return null }
+    val chosen = (prefs.getString("model", "") ?: "").trim()
+    val models = (listOf(chosen) + discoverModels(prefs, key).take(5) + listOf("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest"))
+        .filter { it.isNotBlank() }.distinct().take(6)
+    val sys = JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sysText)))
+    val b = JSONObject().put("system_instruction", sys).put("contents", contents)
+    if (json) b.put("generationConfig", JSONObject().put("responseMimeType", "application/json"))
+    if (search) b.put("tools", JSONArray().put(JSONObject().put("google_search", JSONObject())))
+    val body = b.toString()
+    
+    for (m in models) {
+        val res = try { callModel(m, key, body) } catch (e: Exception) { Pair(0, "") }
+        if (res.first in 200..299) {
+            val ans = extractText(res.second)
+            if (ans != null) return ans
+        }
+        if (res.first == 401 || res.first == 403 || res.second.contains("API_KEY_INVALID")) {
+            log("مفتاح Gemini غير صالح")
+            return null
+        }
+    }
+    
+    log("فشلت كل المحاولات في جميع المزودين.")
+    return null
+}
 
     private fun textPart(role: String, text: String): JSONObject =
         JSONObject().put("role", role).put("parts", JSONArray().put(JSONObject().put("text", text)))
