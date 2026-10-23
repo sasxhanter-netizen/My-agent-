@@ -1145,11 +1145,52 @@ private fun gen(sysText: String, contents: JSONArray, json: Boolean, search: Boo
         }
     }
 
-    private fun research(q: String) {
-        if (q.isBlank()) { say("ما فهمت السؤال"); return }
-        startWork("أبحث لك")
-        askPlain(q, true) { say(it); appendResult(it) }
+    private fun searchWeb(query: String): String? {
+    return try {
+        val encoded = java.net.URLEncoder.encode(query, "UTF-8")
+        val url = "https://api.duckduckgo.com/?q=$encoded&format=json&no_html=1&skip_disambig=1"
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = 15000
+        c.readTimeout = 15000
+        val txt = c.inputStream.bufferedReader().use { it.readText() }
+        val j = JSONObject(txt)
+        val abstract = j.optString("AbstractText", "")
+        if (abstract.isNotBlank()) return abstract
+        
+        val related = j.optJSONArray("RelatedTopics")
+        if (related != null && related.length() > 0) {
+            val sb = StringBuilder()
+            for (i in 0 until minOf(related.length(), 3)) {
+                val item = related.optJSONObject(i)
+                if (item != null) {
+                    sb.append(item.optString("Text", "")).append("\n")
+                }
+            }
+            return sb.toString().trim()
+        }
+        null
+    } catch (e: Exception) {
+        null
     }
+}
+
+private fun research(q: String) {
+    if (q.isBlank()) { say("ما فهمت السؤال"); return }
+    startWork("أبحث لك في الإنترنت...")
+    thread {
+        val result = searchWeb(q)
+        handler.post {
+            waiting = false
+            if (result.isNullOrBlank()) {
+                say("ما لقيت نتايج بحث واضحة، هجرب أجاوب من معرفتي.")
+                askPlain(q, false) { say(it); appendResult(it) }
+            } else {
+                val prompt = "بناءً على هذه المعلومات من البحث، أجب على السؤال التالي باختصار:\nالسؤال: $q\nالمعلومات: $result"
+                askPlain(prompt, false) { say(it); appendResult(it) }
+            }
+        }
+    }
+}
 
     private fun setAlarm(t: String, label: String) {
         val parts = normalizeDigits(t).trim().split(":")
