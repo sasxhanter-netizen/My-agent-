@@ -68,13 +68,15 @@ fun AgentScreen(activity: Activity) {
     
     var apiKey by remember { mutableStateOf(prefs.getString("key", "") ?: "") }
     var model by remember { mutableStateOf(prefs.getString("model", "gemini-2.5-flash") ?: "") }
+    var groqKey by remember { mutableStateOf(prefs.getString("groq_key", "") ?: "") }
+    var openRouterKey by remember { mutableStateOf(prefs.getString("openrouter_key", "") ?: "") }
+    
     var isRunning by remember { mutableStateOf(Bus.running) }
     var showSettings by remember { mutableStateOf(false) }
     var showChat by remember { mutableStateOf(false) }
     var chatMessages by remember { mutableStateOf(listOf<Pair<String, String>>()) }
     var inputText by remember { mutableStateOf("") }
     
-    // إدارة الأخطاء
     var hasError by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf("") }
     
@@ -100,8 +102,8 @@ fun AgentScreen(activity: Activity) {
         Bus.listener = { msg ->
             activity.runOnUiThread {
                 if (msg.contains("429") || msg.contains("مشغول")) {
-                    // تجاهل رسائل الـ 429
-                } else if (msg.contains("خطأ") || msg.contains("فشل") || msg.contains("نفدت")) {
+                    // تجاهل رسائل الـ 429 والمحاولات
+                } else if (msg.contains("خطأ") || msg.contains("فشل") || msg.contains("نفدت") || msg.contains("فشلت")) {
                     hasError = true
                     errorMessage = msg
                     chatMessages = chatMessages + Pair("System", "⚠️ حدث خطأ، يرجى مراجعة الإعدادات.")
@@ -367,6 +369,22 @@ fun AgentScreen(activity: Activity) {
                         label = { Text("Model") },
                         modifier = Modifier.fillMaxWidth()
                     )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = groqKey,
+                        onValueChange = { groqKey = it },
+                        label = { Text("Groq API Key (للسرعة)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        visualTransformation = PasswordVisualTransformation()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = openRouterKey,
+                        onValueChange = { openRouterKey = it },
+                        label = { Text("OpenRouter API Key (DeepSeek)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        visualTransformation = PasswordVisualTransformation()
+                    )
                     
                     if (hasError) {
                         Spacer(Modifier.height(16.dp))
@@ -384,7 +402,12 @@ fun AgentScreen(activity: Activity) {
             },
             confirmButton = {
                 TextButton(onClick = {
-                    prefs.edit().putString("key", apiKey).putString("model", model).apply()
+                    prefs.edit().apply {
+                        putString("key", apiKey)
+                        putString("model", model)
+                        putString("groq_key", groqKey)
+                        putString("openrouter_key", openRouterKey)
+                    }.apply()
                     showSettings = false
                 }) { Text("Save", color = Color(0xFF00B4D8)) }
             }
