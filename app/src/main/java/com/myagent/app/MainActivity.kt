@@ -45,9 +45,11 @@ import io.objectbox.BoxStore
 import io.objectbox.kotlin.boxFor
 
 class MainActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
+   lateinit var boxStore: BoxStore
+ override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent {
+    boxStore = MyObjectBox.builder().androidContext(this).build()   
+ setContent {
             MaterialTheme(
                 colorScheme = darkColorScheme(
                     primary = Color(0xFF00B4D8),
