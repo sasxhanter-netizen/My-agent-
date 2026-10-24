@@ -14,7 +14,7 @@ android {
         applicationId = "com.myagent.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 16
+        versionCode = 19
         versionName = "4.0"
     }
 
@@ -41,6 +41,18 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+    // إجبار kapt على استخدام Java 17
+    kapt {
+        correctErrorTypes = true
+        useBuildCache = true
+    }
+    
+    // التأكد من توافق Java
+    tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+        kotlinOptions {
+            jvmTarget = "17"
+        }
+    }
 }
 
 dependencies {
