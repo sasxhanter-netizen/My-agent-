@@ -14,8 +14,8 @@ android {
         applicationId = "com.myagent.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 19
-        versionName = "4.0"
+        versionCode = 20 // رقم جديد
+        versionName = "4.1"
     }
 
     signingConfigs {
@@ -36,22 +36,16 @@ android {
     }
 
     buildFeatures { compose = true }
+    
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    // إجبار kapt على استخدام Java 17
+
+    // إجبار kapt على العمل مع Java 17
     kapt {
         correctErrorTypes = true
-        useBuildCache = true
-    }
-    
-    // التأكد من توافق Java
-    tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
-        kotlinOptions {
-            jvmTarget = "17"
-        }
     }
 }
 
@@ -67,7 +61,7 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
 
-    // ObjectBox (النسخة الكاملة)
+    // ObjectBox
     implementation("io.objectbox:objectbox-android:4.0.0")
     implementation("io.objectbox:objectbox-kotlin:4.0.0")
     kapt("io.objectbox:objectbox-processor:4.0.0")
