@@ -14,7 +14,7 @@ android {
         applicationId = "com.myagent.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 15
+        versionCode = 16
         versionName = "4.0"
     }
 
