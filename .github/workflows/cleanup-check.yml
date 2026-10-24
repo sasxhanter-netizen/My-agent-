@@ -1,0 +1,28 @@
+name: Cleanup Check
+on:
+  push:
+    branches: [Cleanup]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Search leftovers
+        run: |
+          grep -rniE "sceneview|filament|\.glb" --include=*.kt --include=*.kts --include=*.xml . > leftovers.txt || true
+          find . -type f -size +300k -not -path "./.git/*" > bigfiles.txt || true
+      - name: Lint
+        run: chmod +x gradlew && ./gradlew lintDebug --continue
+        continue-on-error: true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cleanup-reports
+          path: |
+            leftovers.txt
+            bigfiles.txt
+            app/build/reports/lint-results-debug.*
