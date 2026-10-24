@@ -12,11 +12,13 @@ pluginManagement {
         }
     }
 }
+
 dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
     }
 }
-rootProject.name = "MyAgent"
+
+rootProject.name = "Anubis"
 include(":app")
