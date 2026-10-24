@@ -12,7 +12,7 @@ android {
         applicationId = "com.myagent.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 12 // رقم جديد
+        versionCode = 13 // رقم جديد
         versionName = "3.4"
     }
 
