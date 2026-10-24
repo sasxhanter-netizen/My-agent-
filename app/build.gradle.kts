@@ -2,6 +2,8 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("org.jetbrains.kotlin.kapt")
+    id("io.objectbox")
 }
 
 android {
@@ -12,8 +14,8 @@ android {
         applicationId = "com.myagent.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 14 // رقم جديد
-        versionName = "3.4"
+        versionCode = 17
+        versionName = "4.0"
     }
 
     signingConfigs {
@@ -26,19 +28,14 @@ android {
     }
 
     buildTypes {
-        getByName("debug") {
-            // عشان الـ debug يشتغل برضه
-            signingConfig = signingConfigs.getByName("release")
-        }
+        getByName("debug") { signingConfig = signingConfigs.getByName("release") }
         getByName("release") {
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("release")
         }
     }
 
-    buildFeatures {
-        compose = true
-    }
+    buildFeatures { compose = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -57,4 +54,9 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
+
+    // ObjectBox (النسخة الكاملة)
+    implementation("io.objectbox:objectbox-android:4.0.0")
+    implementation("io.objectbox:objectbox-kotlin:4.0.0")
+    kapt("io.objectbox:objectbox-processor:4.0.0")
 }
