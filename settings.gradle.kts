@@ -12,13 +12,11 @@ pluginManagement {
         }
     }
 }
-
 dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
     }
 }
-
 rootProject.name = "MyAgent"
 include(":app")
