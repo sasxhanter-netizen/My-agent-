@@ -49,7 +49,8 @@ class MainActivity : ComponentActivity() {
  override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
     boxStore = MyObjectBox.builder().androidContext(this).build()   
- setContent {
+ boxStore = MyObjectBox.builder().androidContext(this).build()
+setContent {
             MaterialTheme(
                 colorScheme = darkColorScheme(
                     primary = Color(0xFF00B4D8),
