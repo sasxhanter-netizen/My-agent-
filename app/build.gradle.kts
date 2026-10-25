@@ -14,8 +14,8 @@ android {
         applicationId = "com.myagent.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 25
-        versionName = "4.6"
+        versionCode = 26
+        versionName = "4.7"
     }
 
     signingConfigs {
