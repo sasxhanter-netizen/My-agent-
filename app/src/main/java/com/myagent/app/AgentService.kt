@@ -42,8 +42,6 @@ import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
 import android.telephony.SmsManager
 import android.util.Base64
 import android.view.Gravity
@@ -113,7 +111,7 @@ fun discoverModels(prefs: SharedPreferences, key: String): List<String> {
     }
 }
 
-class AgentService : Service(), TextToSpeech.OnInitListener {
+class AgentService : Service() {
     companion object {
         const val IDLE = 0
         const val LISTENING = 1
@@ -124,8 +122,7 @@ class AgentService : Service(), TextToSpeech.OnInitListener {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var wm: WindowManager
     private val prefs by lazy { getSharedPreferences("agent", Context.MODE_PRIVATE) }
-    private var tts: TextToSpeech? = null
-    private var ttsReady = false
+    private var voice: VoiceEngine? = null
     private var recognizer: SpeechRecognizer? = null
     private var avatar: AvatarView? = null
     private var avLp: WindowManager.LayoutParams? = null
@@ -238,23 +235,23 @@ You MUST respond ONLY with a valid JSON object in this format: {"action":"chat",
     override fun onBind(i: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-    // التعامل مع النص القادم من الواجهة
-    if (intent?.action == "TEXT_INPUT") {
-        val text = intent.getStringExtra("text")
-        if (!text.isNullOrBlank()) {
-            // استدعاء دالة ask اللي بتتعامل مع Gemini
-            ask(text)
+        // التعامل مع النص القادم من الواجهة
+        if (intent?.action == "TEXT_INPUT") {
+            val text = intent.getStringExtra("text")
+            if (!text.isNullOrBlank()) {
+                // استدعاء دالة ask اللي بتتعامل مع المزودين
+                ask(text)
+            }
         }
+        return START_NOT_STICKY
     }
-    return START_NOT_STICKY
-}
 
     override fun onCreate() {
         super.onCreate()
         Bus.running = true
         startFg()
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        tts = TextToSpeech(this, this)
+        voice = VoiceEngine(this, onStart = { setState(SPEAKING) }, onDone = { onSpeakDone() })
         if (!Settings.canDrawOverlays(this)) {
             log("صلاحية العرض فوق التطبيقات غير مفعّلة")
             stopSelf()
@@ -271,7 +268,7 @@ You MUST respond ONLY with a valid JSON object in this format: {"action":"chat",
         handler.removeCallbacksAndMessages(null)
         try { wanderAnim?.cancel() } catch (e: Exception) {}
         try { recognizer?.destroy() } catch (e: Exception) {}
-        try { tts?.shutdown() } catch (e: Exception) {}
+        try { voice?.shutdown() } catch (e: Exception) {}
         try { avatar?.let { wm.removeView(it) } } catch (e: Exception) {}
         try { if (panelShown) panel?.let { wm.removeView(it) } } catch (e: Exception) {}
         super.onDestroy()
@@ -291,17 +288,6 @@ You MUST respond ONLY with a valid JSON object in this format: {"action":"chat",
         } else {
             startForeground(1, n)
         }
-    }
-
-    override fun onInit(s: Int) {
-        val t = tts ?: return
-        t.setLanguage(Locale("ar"))
-        t.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(id: String?) { handler.post { if (id == currentUtt) setState(SPEAKING) } }
-            override fun onDone(id: String?) { handler.post { if (id == currentUtt) onSpeakDone() } }
-            override fun onError(id: String?) { handler.post { if (id == currentUtt) onSpeakDone() } }
-        })
-        ttsReady = true
     }
 
     private fun buildAvatar() {
@@ -501,7 +487,7 @@ You MUST respond ONLY with a valid JSON object in this format: {"action":"chat",
         pendingNo = null
         currentUtt = ""
         try { recognizer?.cancel() } catch (e: Exception) {}
-        tts?.stop()
+        voice?.stop()
         hidePanel()
         setState(IDLE)
     }
@@ -519,14 +505,12 @@ You MUST respond ONLY with a valid JSON object in this format: {"action":"chat",
         log("المساعد: " + s)
         if (!awaitingConfirm) showPanel(s, false)
         val spoken = s.replace(Regex("[*#_`]"), "").take(3500)
-        val t = tts
-        if (t == null || !ttsReady || spoken.isBlank()) {
+        val v = voice
+        if (v == null || spoken.none { it.isLetterOrDigit() }) {
             onSpeakDone()
             return
         }
-        val id = "u" + System.nanoTime()
-        currentUtt = id
-        t.speak(spoken, TextToSpeech.QUEUE_FLUSH, null, id)
+        v.speak(spoken)
     }
 
     private fun startWork(msg: String) {
@@ -581,7 +565,20 @@ You MUST respond ONLY with a valid JSON object in this format: {"action":"chat",
         })
         val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
         i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ar-SA")
+        // اللغة الأساسية للاستماع (تقدر تغيّرها من الإعدادات المحفوظة: ar-SA أو en-US)
+        val lang = prefs.getString("listen_lang", "ar-SA") ?: "ar-SA"
+        val other = if (lang.startsWith("ar")) "en-US" else "ar-SA"
+        i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang)
+        i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, lang)
+        // لغة إضافية (إنجليزي) وكشف اللغة تلقائياً: محاولة، ومدى الدعم يعتمد على خدمة التعرف في التلفون
+        i.putExtra("android.speech.extra.ADDITIONAL_LANGUAGES", arrayOf(other))
+        if (Build.VERSION.SDK_INT >= 33) {
+            i.putExtra("android.speech.extra.ENABLE_LANGUAGE_DETECTION", true)
+            i.putStringArrayListExtra(
+                "android.speech.extra.LANGUAGE_DETECTION_ALLOWED_LANGUAGES",
+                arrayListOf("ar-SA", "en-US")
+            )
+        }
         setState(LISTENING)
         r.startListening(i)
     }
@@ -653,7 +650,7 @@ You MUST respond ONLY with a valid JSON object in this format: {"action":"chat",
         confirmTries = 0
         currentUtt = ""
         try { recognizer?.cancel() } catch (e: Exception) {}
-        tts?.stop()
+        voice?.stop()
         hidePanel()
         setState(IDLE)
         if (yes && p != null) p() else if (n != null) n() else say("تم الإلغاء")
@@ -736,115 +733,115 @@ You MUST respond ONLY with a valid JSON object in this format: {"action":"chat",
     }
 
     private fun callGroq(model: String, key: String, body: String): Pair<Int, String> {
-    val c = URL("https://api.groq.com/openai/v1/chat/completions").openConnection() as HttpURLConnection
-    c.requestMethod = "POST"
-    c.setRequestProperty("Content-Type", "application/json")
-    c.setRequestProperty("Authorization", "Bearer $key")
-    c.doOutput = true
-    c.connectTimeout = 20000
-    c.readTimeout = 60000
-    c.outputStream.use { it.write(body.toByteArray()) }
-    val code = c.responseCode
-    val txt = (if (code in 200..299) c.inputStream else c.errorStream).bufferedReader().use { it.readText() }
-    return Pair(code, txt)
-}
-
-private fun callOpenRouter(model: String, key: String, body: String): Pair<Int, String> {
-    val c = URL("https://openrouter.ai/api/v1/chat/completions").openConnection() as HttpURLConnection
-    c.requestMethod = "POST"
-    c.setRequestProperty("Content-Type", "application/json")
-    c.setRequestProperty("Authorization", "Bearer $key")
-    c.setRequestProperty("HTTP-Referer", "https://myagent.app")
-    c.setRequestProperty("X-Title", "MyAgent")
-    c.doOutput = true
-    c.connectTimeout = 20000
-    c.readTimeout = 60000
-    c.outputStream.use { it.write(body.toByteArray()) }
-    val code = c.responseCode
-    val txt = (if (code in 200..299) c.inputStream else c.errorStream).bufferedReader().use { it.readText() }
-    return Pair(code, txt)
-}
-
-private fun extractOpenAIText(txt: String): String? {
-    return try {
-        val content = JSONObject(txt).getJSONArray("choices").getJSONObject(0)
-            .getJSONObject("message").getString("content")
-        if (content.isBlank()) null else content
-    } catch (e: Exception) {
-        null
+        val c = URL("https://api.groq.com/openai/v1/chat/completions").openConnection() as HttpURLConnection
+        c.requestMethod = "POST"
+        c.setRequestProperty("Content-Type", "application/json")
+        c.setRequestProperty("Authorization", "Bearer $key")
+        c.doOutput = true
+        c.connectTimeout = 20000
+        c.readTimeout = 60000
+        c.outputStream.use { it.write(body.toByteArray()) }
+        val code = c.responseCode
+        val txt = (if (code in 200..299) c.inputStream else c.errorStream).bufferedReader().use { it.readText() }
+        return Pair(code, txt)
     }
-}
 
-private fun buildOpenAIBody(system: String, contents: JSONArray, json: Boolean): String {
-    val messages = JSONArray()
-    messages.put(JSONObject().put("role", "system").put("content", system))
-    for (i in 0 until contents.length()) {
-        val msg = contents.getJSONObject(i)
-        val role = if (msg.optString("role") == "model") "assistant" else "user"
-        val text = msg.getJSONArray("parts").getJSONObject(0).optString("text", "")
-        messages.put(JSONObject().put("role", role).put("content", text))
+    private fun callOpenRouter(model: String, key: String, body: String): Pair<Int, String> {
+        val c = URL("https://openrouter.ai/api/v1/chat/completions").openConnection() as HttpURLConnection
+        c.requestMethod = "POST"
+        c.setRequestProperty("Content-Type", "application/json")
+        c.setRequestProperty("Authorization", "Bearer $key")
+        c.setRequestProperty("HTTP-Referer", "https://myagent.app")
+        c.setRequestProperty("X-Title", "MyAgent")
+        c.doOutput = true
+        c.connectTimeout = 20000
+        c.readTimeout = 60000
+        c.outputStream.use { it.write(body.toByteArray()) }
+        val code = c.responseCode
+        val txt = (if (code in 200..299) c.inputStream else c.errorStream).bufferedReader().use { it.readText() }
+        return Pair(code, txt)
     }
-    val body = JSONObject().put("messages", messages).put("temperature", 0.7)
-    if (json) body.put("response_format", JSONObject().put("type", "json_object"))
-    return body.toString()
-}
 
-private fun gen(sysText: String, contents: JSONArray, json: Boolean, search: Boolean): String? {
-    if (!online()) { log("لا يوجد اتصال بالنت"); return null }
-
-    // 1. OpenRouter
-    val orKey = prefs.getString("openrouter_key", "") ?: ""
-    if (orKey.isNotBlank()) {
-        val body = buildOpenAIBody(sysText, contents, json)
-        val res = try { callOpenRouter("deepseek/deepseek-r1:free", orKey, body) } catch (e: Exception) { Pair(0, "") }
-        if (res.first in 200..299) {
-            val ans = extractOpenAIText(res.second)
-            if (ans != null) return ans
-        } else {
-            log("OpenRouter: جاري التحويل...")
+    private fun extractOpenAIText(txt: String): String? {
+        return try {
+            val content = JSONObject(txt).getJSONArray("choices").getJSONObject(0)
+                .getJSONObject("message").getString("content")
+            if (content.isBlank()) null else content
+        } catch (e: Exception) {
+            null
         }
     }
 
-    // 2. Groq
-    val gqKey = prefs.getString("groq_key", "") ?: ""
-    if (gqKey.isNotBlank()) {
-        val body = buildOpenAIBody(sysText, contents, json)
-        val res = try { callGroq("llama-3.3-70b-versatile", gqKey, body) } catch (e: Exception) { Pair(0, "") }
-        if (res.first in 200..299) {
-            val ans = extractOpenAIText(res.second)
-            if (ans != null) return ans
-        } else {
-            log("Groq: جاري التحويل...")
+    private fun buildOpenAIBody(system: String, contents: JSONArray, json: Boolean): String {
+        val messages = JSONArray()
+        messages.put(JSONObject().put("role", "system").put("content", system))
+        for (i in 0 until contents.length()) {
+            val msg = contents.getJSONObject(i)
+            val role = if (msg.optString("role") == "model") "assistant" else "user"
+            val text = msg.getJSONArray("parts").getJSONObject(0).optString("text", "")
+            messages.put(JSONObject().put("role", role).put("content", text))
         }
+        val body = JSONObject().put("messages", messages).put("temperature", 0.7)
+        if (json) body.put("response_format", JSONObject().put("type", "json_object"))
+        return body.toString()
     }
 
-    // 3. Gemini
-    val key = prefs.getString("key", "") ?: ""
-    if (key.isBlank()) { log("اكتب مفتاح Gemini أولاً"); return null }
-    val chosen = (prefs.getString("model", "") ?: "").trim()
-    val models = (listOf(chosen) + discoverModels(prefs, key).take(5) + listOf("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest"))
-        .filter { it.isNotBlank() }.distinct().take(6)
-    val sys = JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sysText)))
-    val b = JSONObject().put("system_instruction", sys).put("contents", contents)
-    if (json) b.put("generationConfig", JSONObject().put("responseMimeType", "application/json"))
-    if (search) b.put("tools", JSONArray().put(JSONObject().put("google_search", JSONObject())))
-    val body = b.toString()
-    
-    for (m in models) {
-        val res = try { callModel(m, key, body) } catch (e: Exception) { Pair(0, "") }
-        if (res.first in 200..299) {
-            val ans = extractText(res.second)
-            if (ans != null) return ans
+    private fun gen(sysText: String, contents: JSONArray, json: Boolean, search: Boolean): String? {
+        if (!online()) { log("لا يوجد اتصال بالنت"); return null }
+
+        // 1. OpenRouter
+        val orKey = prefs.getString("openrouter_key", "") ?: ""
+        if (orKey.isNotBlank()) {
+            val body = buildOpenAIBody(sysText, contents, json)
+            val res = try { callOpenRouter("deepseek/deepseek-r1:free", orKey, body) } catch (e: Exception) { Pair(0, "") }
+            if (res.first in 200..299) {
+                val ans = extractOpenAIText(res.second)
+                if (ans != null) return ans
+            } else {
+                log("OpenRouter: جاري التحويل...")
+            }
         }
-        if (res.first == 401 || res.first == 403 || res.second.contains("API_KEY_INVALID")) {
-            log("مفتاح Gemini غير صالح")
-            return null
+
+        // 2. Groq
+        val gqKey = prefs.getString("groq_key", "") ?: ""
+        if (gqKey.isNotBlank()) {
+            val body = buildOpenAIBody(sysText, contents, json)
+            val res = try { callGroq("llama-3.3-70b-versatile", gqKey, body) } catch (e: Exception) { Pair(0, "") }
+            if (res.first in 200..299) {
+                val ans = extractOpenAIText(res.second)
+                if (ans != null) return ans
+            } else {
+                log("Groq: جاري التحويل...")
+            }
         }
+
+        // 3. Gemini
+        val key = prefs.getString("key", "") ?: ""
+        if (key.isBlank()) { log("اكتب مفتاح Gemini أولاً"); return null }
+        val chosen = (prefs.getString("model", "") ?: "").trim()
+        val models = (listOf(chosen) + discoverModels(prefs, key).take(5) + listOf("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest"))
+            .filter { it.isNotBlank() }.distinct().take(6)
+        val sys = JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sysText)))
+        val b = JSONObject().put("system_instruction", sys).put("contents", contents)
+        if (json) b.put("generationConfig", JSONObject().put("responseMimeType", "application/json"))
+        if (search) b.put("tools", JSONArray().put(JSONObject().put("google_search", JSONObject())))
+        val body = b.toString()
+
+        for (m in models) {
+            val res = try { callModel(m, key, body) } catch (e: Exception) { Pair(0, "") }
+            if (res.first in 200..299) {
+                val ans = extractText(res.second)
+                if (ans != null) return ans
+            }
+            if (res.first == 401 || res.first == 403 || res.second.contains("API_KEY_INVALID")) {
+                log("مفتاح Gemini غير صالح")
+                return null
+            }
+        }
+
+        log("فشلت كل المحاولات في جميع المزودين.")
+        return null
     }
-    
-    log("فشلت كل المحاولات في جميع المزودين.")
-    return null
-}
 
     private fun textPart(role: String, text: String): JSONObject =
         JSONObject().put("role", role).put("parts", JSONArray().put(JSONObject().put("text", text)))
@@ -901,6 +898,7 @@ private fun gen(sysText: String, contents: JSONArray, json: Boolean, search: Boo
             }
         }
     }
+
     private fun handle(raw: String) {
         val clean = raw.replace("```json", "").replace("```", "").trim()
         val j = try { JSONObject(clean) } catch (e: Exception) { null }
@@ -1158,51 +1156,51 @@ private fun gen(sysText: String, contents: JSONArray, json: Boolean, search: Boo
     }
 
     private fun searchWeb(query: String): String? {
-    return try {
-        val encoded = java.net.URLEncoder.encode(query, "UTF-8")
-        val url = "https://api.duckduckgo.com/?q=$encoded&format=json&no_html=1&skip_disambig=1"
-        val c = URL(url).openConnection() as HttpURLConnection
-        c.connectTimeout = 15000
-        c.readTimeout = 15000
-        val txt = c.inputStream.bufferedReader().use { it.readText() }
-        val j = JSONObject(txt)
-        val abstract = j.optString("AbstractText", "")
-        if (abstract.isNotBlank()) return abstract
-        
-        val related = j.optJSONArray("RelatedTopics")
-        if (related != null && related.length() > 0) {
-            val sb = StringBuilder()
-            for (i in 0 until minOf(related.length(), 3)) {
-                val item = related.optJSONObject(i)
-                if (item != null) {
-                    sb.append(item.optString("Text", "")).append("\n")
+        return try {
+            val encoded = java.net.URLEncoder.encode(query, "UTF-8")
+            val url = "https://api.duckduckgo.com/?q=$encoded&format=json&no_html=1&skip_disambig=1"
+            val c = URL(url).openConnection() as HttpURLConnection
+            c.connectTimeout = 15000
+            c.readTimeout = 15000
+            val txt = c.inputStream.bufferedReader().use { it.readText() }
+            val j = JSONObject(txt)
+            val abstract = j.optString("AbstractText", "")
+            if (abstract.isNotBlank()) return abstract
+
+            val related = j.optJSONArray("RelatedTopics")
+            if (related != null && related.length() > 0) {
+                val sb = StringBuilder()
+                for (i in 0 until minOf(related.length(), 3)) {
+                    val item = related.optJSONObject(i)
+                    if (item != null) {
+                        sb.append(item.optString("Text", "")).append("\n")
+                    }
+                }
+                return sb.toString().trim()
+            }
+            null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun research(q: String) {
+        if (q.isBlank()) { say("ما فهمت السؤال"); return }
+        startWork("أبحث لك في الإنترنت...")
+        thread {
+            val result = searchWeb(q)
+            handler.post {
+                waiting = false
+                if (result.isNullOrBlank()) {
+                    say("ما لقيت نتايج بحث واضحة، هجرب أجاوب من معرفتي.")
+                    askPlain(q, false) { say(it); appendResult(it) }
+                } else {
+                    val prompt = "بناءً على هذه المعلومات من البحث، أجب على السؤال التالي باختصار:\nالسؤال: $q\nالمعلومات: $result"
+                    askPlain(prompt, false) { say(it); appendResult(it) }
                 }
             }
-            return sb.toString().trim()
-        }
-        null
-    } catch (e: Exception) {
-        null
-    }
-}
-
-private fun research(q: String) {
-    if (q.isBlank()) { say("ما فهمت السؤال"); return }
-    startWork("أبحث لك في الإنترنت...")
-    thread {
-        val result = searchWeb(q)
-        handler.post {
-            waiting = false
-            if (result.isNullOrBlank()) {
-                say("ما لقيت نتايج بحث واضحة، هجرب أجاوب من معرفتي.")
-                askPlain(q, false) { say(it); appendResult(it) }
-            } else {
-                val prompt = "بناءً على هذه المعلومات من البحث، أجب على السؤال التالي باختصار:\nالسؤال: $q\nالمعلومات: $result"
-                askPlain(prompt, false) { say(it); appendResult(it) }
-            }
         }
     }
-}
 
     private fun setAlarm(t: String, label: String) {
         val parts = normalizeDigits(t).trim().split(":")
