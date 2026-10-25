@@ -13,6 +13,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout source
@@ -40,6 +42,13 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
+      - name: Commit ObjectBox model if changed
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add app/objectbox-models/default.json
+          git diff --cached --quiet || (git commit -m "Update ObjectBox model" && git push)
+
       - name: Rename APK for easier download
         run: mv app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/Anubis-v3.3.apk
 
@@ -48,11 +57,3 @@ jobs:
         with:
           name: Anubis-APK
           path: app/build/outputs/apk/debug/Anubis-v3.3.apk
-
-      - name: Upload ObjectBox model
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: objectbox-model
-          path: app/objectbox-models/default.json
-          if-no-files-found: warn
